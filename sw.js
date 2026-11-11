@@ -1,8 +1,8 @@
 // App files: network first (so updates show up), saved copy when there is no signal.
 // Photos: cached after the first view (each photo has its own file name, so they never change).
 // The checklist data itself is kept by the app (see app.js), not here.
-const SHELL = 'dq-shell-v1', PHOTOS = 'dq-photos-v1';
-const FILES = ['./', 'index.html', 'config.js', 'sb.js', 'app.js', 'letterhead.png', 'icon-180.png', 'icon-192.png', 'manifest.webmanifest'];
+const SHELL = 'dq-shell-v2', PHOTOS = 'dq-photos-v1';
+const FILES = ['./', 'index.html', 'config.js', 'sb.js', 'pdf.js', 'app.js', 'letterhead.png', 'letterhead.jpg', 'icon-180.png', 'icon-192.png', 'manifest.webmanifest'];
 const HOME = new URL('./', self.location).pathname;                       // the app's own folder on the site
 
 // A second copy of the app files is kept in the phone's database. The Finishes app lives on the same site

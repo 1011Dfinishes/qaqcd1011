@@ -10,7 +10,8 @@ const BLANK_A = { answer: null, notes: '', corrective_action: '', responsible: '
 const BLANK_U = { inspected_on: null, inspected_by: '', comments: '' };
 const PHOTO_MAX = 12;             // photos per deficiency
 const DATE_FIELDS = { due_date: 1, corrected_on: 1, inspected_on: 1 };
-const DEPTH = { home: 0, floor: 1, questions: 1, unit: 2, punch: 2, qnew: 2, qedit: 2, detail: 3 };
+const DEPTH = { home: 0, floor: 1, questions: 1, unit: 2, punch: 2, qnew: 2, qedit: 2, detail: 3, sign: 3 };
+const ROLES = [['donato', 'Donato Representative'], ['ccm', 'CCM Representative']];
 const BACK = '<svg width="8" height="13" viewBox="0 0 8 13" aria-hidden="true"><path d="M6.4 1.4 1.4 6.5l5 5.1" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
 const sb = new Supa(SB_URL, SB_KEY, 'dq_session', BUCKET);
@@ -21,6 +22,7 @@ const two = n => String(n).padStart(2, '0');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const akey = (f, u, q) => f + '|' + u + '|' + q;
 const ukey = (f, u) => f + '|' + u;
+const skey = (f, u, role) => f + '|' + u + '|' + role;
 const floorOf = f => FLOORS.find(x => x.floor === f);
 const oneLine = s => String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
 const plural = (n, one, many) => n + ' ' + (n === 1 ? one : many);
@@ -58,6 +60,7 @@ const S = {
   units: {},            // saved unit records by "floor|unit"
   project: { project_location: '', t: 0 },
   photos: {},           // saved photos of deficiencies, by id
+  sigs: {},             // sign-off signatures by "floor|unit|role"
   pend: {},             // photos still waiting to upload, by their local id
   blob: {},             // previews of photos uploaded from this phone, by file path
   out: store.get('dq_out', {}) || {},   // changes waiting to upload
@@ -65,6 +68,7 @@ const S = {
   editor: false, guest: false, live: false, netDown: false,
   rev: 0,               // goes up whenever anything shown could have changed
   seq: 0,               // goes up whenever data from the server is applied
+  redo: null, signDirty: false,
   cacheRev: -1, stale: false, draft: null, ren: null, pf: 'open', detailBack: null, flashQ: null, newSec: null, tap: null,
   day: todayISO()
 };
@@ -259,6 +263,13 @@ function putPhoto(r) {                          // photos never change once save
   S.photos[r.id] = { id: r.id, floor: r.floor, unit: r.unit, question_id: r.question_id, path: r.path, taken: r.taken_at ? tsMs(r.taken_at) : null, t: tsMs(r.created_at), s: S.seq + 1 };
   return 1;
 }
+function putSig(r) {
+  const k = skey(r.floor, r.unit, r.role), t = tsMs(r.updated_at), old = S.sigs[k];
+  if (old && old.t >= t) return old.t === t ? 0 : -1;
+  S.sigs[k] = { floor: r.floor, unit: r.unit, role: r.role, print_name: r.print_name || '', signed_on: r.signed_on || null, path: r.path, t, s: S.seq + 1 };
+  return 1;
+}
+function signedUnit(f, u) { return !!(S.sigs[skey(f, u, 'donato')] && S.sigs[skey(f, u, 'ccm')]); }
 function applied() { S.seq++; bump(); }
 
 // a live update from another phone (or the echo of our own change)
@@ -271,12 +282,14 @@ function onLiveChange(table, d) {
     else if (table === 'roughin_units' && o.floor != null && o.unit != null) { const k = ukey(o.floor, o.unit); delete S.units[k]; S.dead['u|' + k] = S.seq + 1; res = 1; }
     else if (table === 'roughin_questions' && o.id != null) { delete S.q[o.id]; S.dead['q|' + o.id] = S.seq + 1; res = 1; }
     else if (table === 'roughin_photos' && o.id != null) { delete S.photos[o.id]; S.dead['ph|' + o.id] = S.seq + 1; res = 1; }
+    else if (table === 'roughin_signatures' && o.floor != null && o.unit != null && o.role) { const k = skey(o.floor, o.unit, o.role); delete S.sigs[k]; S.dead['sg|' + k] = S.seq + 1; res = 1; }
   } else if (d.record) {
     if (table === 'roughin_answers') res = putAnswer(d.record);
     else if (table === 'roughin_units') res = putUnit(d.record);
     else if (table === 'roughin_questions') res = putQuestion(d.record);
     else if (table === 'roughin_project') { res = putProject(d.record); if (res > 0) showAddress(); }
     else if (table === 'roughin_photos') res = putPhoto(d.record);
+    else if (table === 'roughin_signatures') res = putSig(d.record);
   }
   if (res === undefined) { scheduleRefresh(); return; }                  // a message we can't read: fetch a fresh copy instead
   if (res > 0) { applied(); scheduleRender(); if (table === 'roughin_photos') refreshPhotos(); }
@@ -309,10 +322,18 @@ function applySnapshot(s, seq0) {
     const row = { floor: a[0], unit: a[1], inspected_on: a[2] || null, inspected_by: a[3] || '', comments: a[4] || '', t: a[5] || 0, s: 0 }, old = S.units[k];
     units[k] = old && old.t > row.t ? old : row;
   });
+  const sigs = {};
+  (s.sigs || []).forEach(a => {
+    const k = skey(a[0], a[1], a[2]);
+    if (S.dead['sg|' + k] > seq0) return;
+    const row = { floor: a[0], unit: a[1], role: a[2], print_name: a[3] || '', signed_on: a[4] || null, path: a[5], t: a[6] || 0, s: 0 }, old = S.sigs[k];
+    sigs[k] = old && old.t > row.t ? old : row;
+  });
+  Object.keys(S.sigs).forEach(k => { if (!sigs[k] && S.sigs[k].s > seq0) sigs[k] = S.sigs[k]; });
   Object.keys(S.q).forEach(k => { if (!q[k] && S.q[k].s > seq0) q[k] = S.q[k]; });
   Object.keys(S.ans).forEach(k => { if (!ans[k] && S.ans[k].s > seq0) ans[k] = S.ans[k]; });
   Object.keys(S.units).forEach(k => { if (!units[k] && S.units[k].s > seq0) units[k] = S.units[k]; });
-  S.q = q; S.ans = ans; S.units = units; S.photos = photos; S.dead = {};
+  S.q = q; S.ans = ans; S.units = units; S.photos = photos; S.sigs = sigs; S.dead = {};
   if (s.project && (s.project.t || 0) >= S.project.t) S.project = { project_location: s.project.project_location || '', t: s.project.t || 0 };
   S.loaded = true; S.failed = false;
   bump();
@@ -326,7 +347,8 @@ function exportSnapshot() {
     questions: Object.keys(S.q).map(k => { const q = S.q[k]; return { id: q.id, section: q.section, question: q.question, problem_answer: q.problem_answer, position: q.position, removed: q.removed, t: q.t }; }),
     answers: Object.keys(S.ans).map(k => { const a = S.ans[k]; return hasDetails(a) ? [a.floor, a.unit, a.question_id, a.answer, a.t, a.notes, a.corrective_action, a.responsible, a.due_date, a.corrected_on, a.verified_by] : [a.floor, a.unit, a.question_id, a.answer, a.t]; }),
     units: Object.keys(S.units).map(k => { const u = S.units[k]; return [u.floor, u.unit, u.inspected_on, u.inspected_by, u.comments, u.t]; }),
-    photos: Object.keys(S.photos).map(k => { const p = S.photos[k]; return [p.id, p.floor, p.unit, p.question_id, p.path, p.taken, p.t]; })
+    photos: Object.keys(S.photos).map(k => { const p = S.photos[k]; return [p.id, p.floor, p.unit, p.question_id, p.path, p.taken, p.t]; }),
+    sigs: Object.keys(S.sigs).map(k => { const g = S.sigs[k]; return [g.floor, g.unit, g.role, g.print_name, g.signed_on, g.path, g.t]; })
   };
 }
 function saveCache() {
@@ -336,7 +358,7 @@ function saveCache() {
 function loadCache() {
   const c = store.get('dq_cache', null);
   if (!c || !Array.isArray(c.questions) || !c.questions.length) return;
-  try { applySnapshot(c, S.seq); S.cacheRev = S.rev; } catch (e) { S.q = {}; S.ans = {}; S.units = {}; S.photos = {}; S.loaded = false; bump(); }
+  try { applySnapshot(c, S.seq); S.cacheRev = S.rev; } catch (e) { S.q = {}; S.ans = {}; S.units = {}; S.photos = {}; S.sigs = {}; S.loaded = false; bump(); }
 }
 
 let refreshing = false, refreshAgain = false, refreshTimer = 0;
@@ -365,7 +387,7 @@ function scheduleCheck() { clearTimeout(checkTimer); checkTimer = setTimeout(che
 // a cheap check that this phone has exactly what the server has; downloads again only when it does not
 function localVersion() {
   const agg = o => { let n = 0, m = 0; for (const k in o) { n++; if (o[k].t > m) m = o[k].t; } return [n, m]; };
-  return { q: agg(S.q), a: agg(S.ans), u: agg(S.units), p: [1, S.project.t], ph: agg(S.photos) };
+  return { q: agg(S.q), a: agg(S.ans), u: agg(S.units), p: [1, S.project.t], ph: agg(S.photos), sg: agg(S.sigs) };
 }
 let checking = false;
 async function checkVersion() {
@@ -375,7 +397,7 @@ async function checkVersion() {
   try {
     const v = await sb.rpc('roughin_version'), l = localVersion();
     setNet(true);
-    if (!v || ['q', 'a', 'u', 'p', 'ph'].some(k => !v[k] || v[k][0] !== l[k][0] || v[k][1] !== l[k][1])) refresh();
+    if (!v || ['q', 'a', 'u', 'p', 'ph', 'sg'].some(k => !v[k] || v[k][0] !== l[k][0] || v[k][1] !== l[k][1])) refresh();
   } catch (e) { if (isNetworkError(e)) setNet(false); }
   checking = false;
 }
@@ -465,7 +487,7 @@ async function checkEditor() {
 // ---------------------------------------------------------------- routing
 function route() {
   const h = location.hash;
-  let m = h.match(/^#\/f\/(\d+)(?:\/(punch)|\/u\/(\d+)(?:\/(d|q)\/(\d+))?)?\/?$/);
+  let m = h.match(/^#\/f\/(\d+)(?:\/(punch)|\/u\/(\d+)(?:\/(d|q)\/(\d+)|\/(sign))?)?\/?$/);
   if (m) {
     const fl = floorOf(+m[1]);
     if (fl) {
@@ -473,6 +495,7 @@ function route() {
       const u = m[3] ? +m[3] : 0;
       if (u >= 1 && u <= fl.units) {
         if (m[4] === 'd' && S.editor) return { view: 'detail', floor: fl.floor, unit: u, q: +m[5] };
+        if (m[6]) return { view: 'sign', floor: fl.floor, unit: u };
         return { view: 'unit', floor: fl.floor, unit: u, q: m[4] ? +m[5] : 0 };
       }
       return { view: 'floor', floor: fl.floor };
@@ -496,6 +519,7 @@ window.addEventListener('hashchange', () => {
   if (curRoute.view === 'detail') S.detailBack = prev.view === 'punch' ? prevHash : null;
   if (curRoute.view !== 'qnew' && curRoute.view !== 'qedit') S.draft = null;
   if (curRoute.view !== 'questions') S.ren = null;
+  S.redo = null; S.signDirty = false;
   render({ force: true });
   if (curRoute.view === 'unit' && curRoute.q) scrollToEl('q' + curRoute.q);
   else if (curRoute.view === 'questions' && S.flashQ) scrollToEl('qm' + S.flashQ);
@@ -518,7 +542,7 @@ function scheduleRender() { clearTimeout(renderTimer); renderTimer = setTimeout(
 // someone is in the middle of typing or picking a date: don't redraw under their fingers
 function typing() {
   const a = document.activeElement;
-  return !!(a && view.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName));
+  return !!(a && view.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) || (curRoute.view === 'sign' && S.signDirty);      // or signing
 }
 document.addEventListener('focusout', () => setTimeout(() => { if (S.stale && !typing()) render(); }, 60));
 
@@ -530,7 +554,7 @@ function render(opts) {
     let pass = 0;
     if (S.loaded) FLOORS.forEach(fl => { pass += floorStats(fl).pass; });
     right.innerHTML = S.loaded ? '<span class="tb-sub">' + pass + ' of ' + TOTAL_UNITS + ' units passed</span>' : '';
-  } else right.textContent = r.view === 'floor' || r.view === 'punch' ? 'FLOOR ' + r.floor : r.view === 'unit' || r.view === 'detail' ? 'UNIT ' + r.unit : 'QUESTIONS';
+  } else right.textContent = r.view === 'floor' || r.view === 'punch' ? 'FLOOR ' + r.floor : r.view === 'unit' || r.view === 'detail' || r.view === 'sign' ? 'UNIT ' + r.unit : 'QUESTIONS';
   if (!S.loaded) {
     view.innerHTML = S.failed ? '<div class="empty">Can’t reach the server right now.<br>Check your signal and try again.<button type="button" class="btn" data-act="retry">Try again</button></div>' : '<div class="empty">Loading…</div>';
     return;
@@ -540,6 +564,7 @@ function render(opts) {
   const y = window.scrollY;
   view.style.setProperty('--nw', QL().list.length > 99 ? '35px' : '27px');      // room for three-digit item numbers
   view.innerHTML = VIEWS[r.view](r);
+  if (r.view === 'sign') view.querySelectorAll('.pad canvas').forEach(setupPad);
   if (window.scrollY !== y) window.scrollTo(0, y);
 }
 
@@ -572,7 +597,7 @@ VIEWS.home = () => {
     const pill = st.total && st.pass === fl.units ? '<span class="pill ok">Passed</span>' : st.answered ? '<span class="pill prog">In progress</span>' : '<span class="pill todo">Not started</span>';
     return '<a class="uc" href="#/f/' + fl.floor + '"><div class="urw"><span>Floor ' + fl.floor + '</span>' + pill + '</div>' +
       '<div class="bar"><i style="width:' + (st.total ? 100 * st.answered / st.total : 0).toFixed(1) + '%"></i></div>' +
-      '<div class="mt">' + st.pass + ' of ' + fl.units + ' units passed' + (st.open ? ' · <span class="red">' + st.open + ' open</span>' : '') + '</div></a>';
+      '<div class="mt">' + st.pass + ' of ' + fl.units + ' units passed' + (st.open ? ' · <span class="red">' + st.open + ' open</span>' : '') + (signedCount(fl) ? ' · ' + signedCount(fl) + ' signed off' : '') + '</div></a>';
   }).join('') + '</div>';
   if (S.editor) {
     const ql = QL();
@@ -597,12 +622,14 @@ VIEWS.floor = r => {
     const us = unitStats(f, u);
     h += '<a class="uc" href="#/f/' + f + '/u/' + u + '"><div class="urw"><span>Unit ' + u + '</span>' + resPill(us.result) + '</div>' +
       '<div class="bar"><i style="width:' + (us.total ? 100 * us.answered / us.total : 0).toFixed(1) + '%"></i></div>' +
-      '<div class="mt">' + us.answered + ' of ' + us.total + ' answered' + (us.open ? ' · <span class="red">' + us.open + ' open</span>' : '') + '</div></a>';
+      '<div class="mt">' + us.answered + ' of ' + us.total + ' answered' + (us.open ? ' · <span class="red">' + us.open + ' open</span>' : '') + (signedUnit(f, u) ? ' · <span class="okc">Signed ✓</span>' : '') + '</div></a>';
   }
-  return h + '</div>';
+  return h + '</div><div class="actions"><button type="button" class="btn alt" data-act="pdffloor">Export Floor ' + f + ' PDF</button></div>' +
+    '<div class="hint" style="margin-top:8px">One PDF: a summary of every unit, the punch list, then the checklist, photos and signatures of each unit that has been started.</div>';
 };
 
 // ---------------------------------------------------------------- one unit: the checklist
+function signedCount(fl) { let n = 0; for (let u = 1; u <= fl.units; u++) if (signedUnit(fl.floor, u)) n++; return n; }
 function unitCount(st) { return st.answered + ' of ' + st.total + ' answered' + (st.total && st.answered >= st.total ? ' ✓' : ''); }
 
 function unitResLine(st) {
@@ -670,7 +697,10 @@ VIEWS.unit = r => {
   h += '<div class="cmt"><div class="sec2">Unit comments</div>' +
     (ed ? '<textarea class="inp ta" data-uf="comments" maxlength="4000" placeholder="Anything worth noting about this unit" style="margin-top:12px">' + esc(ur.comments) + '</textarea>'
       : ur.comments ? '<div class="cmt-v" style="margin-top:10px">' + esc(ur.comments) + '</div>' : '<div class="mt" style="margin-top:10px">No comments.</div>') + '</div>';
+  if (signedUnit(f, u)) h += '<div class="bn" style="margin-top:22px">✓ Unit ' + u + ' signed off</div>';
   h += '<div class="actions">' + (u < fl.units ? '<a class="btn" href="#/f/' + f + '/u/' + (u + 1) + '">Next: Unit ' + (u + 1) + '</a>' : '') +
+    '<button type="button" class="btn alt" data-act="gosign">' + (ed && !signedUnit(f, u) ? 'Sign off Unit ' + u : 'Signatures') + '</button>' +
+    '<button type="button" class="btn alt" data-act="pdfunit">Export Unit ' + u + ' PDF</button>' +
     '<a class="btn alt" href="#/f/' + f + '/punch">Floor ' + f + ' punch list</a></div>';
   return h;
 };
@@ -1052,6 +1082,302 @@ async function restorePhotos() {
   flushPhotos();
 }
 
+// ---------------------------------------------------------------- sign-off (two signatures per unit)
+async function goSign(f, u) {
+  const st = unitStats(f, u);
+  if (S.editor && !signedUnit(f, u) && st.result !== 'pass') {
+    const ok = await choose('Unit ' + u + ' hasn’t passed yet', [{ label: 'Sign off anyway', value: true }], notPassedText(st));
+    if (!ok) return;
+  }
+  location.hash = '#/f/' + f + '/u/' + u + '/sign';
+}
+function notPassedText(st) {
+  const bits = [];
+  if (st.open) bits.push(plural(st.open, 'open deficiency', 'open deficiencies'));
+  if (st.total > st.answered) bits.push(plural(st.total - st.answered, 'item', 'items') + ' not answered');
+  return bits.length ? 'It has ' + bits.join(' and ') + '.' : '';
+}
+
+// the last time anything in the unit changed (answers, details, photos, the unit's own fields)
+function lastChange(f, u) {
+  let m = 0;
+  QL().list.forEach(q => { const a = S.ans[akey(f, u, q.id)]; if (a && a.t > m) m = a.t; });
+  const ur = S.units[ukey(f, u)];
+  if (ur && ur.t > m) m = ur.t;
+  Object.keys(S.photos).forEach(id => { const p = S.photos[id]; if (p.floor === f && p.unit === u && p.t > m) m = p.t; });
+  return m;
+}
+
+VIEWS.sign = r => {
+  const f = r.floor, u = r.unit, st = unitStats(f, u), rk = f + '-' + u, both = signedUnit(f, u);
+  const editing = S.editor && (S.redo === rk || !both);
+  let h = '<div class="srow"><a class="bk" href="#/f/' + f + '/u/' + u + '">' + BACK + 'Unit ' + u + '</a><span' + (st.total && st.answered >= st.total ? ' class="okc"' : '') + '>' + unitCount(st) + '</span></div>';
+  h += '<div class="ures">' + unitResLine(st) + '</div>';
+  if (st.result !== 'pass' && editing) h += '<div class="note">Unit ' + u + ' hasn’t passed yet. ' + esc(notPassedText(st)) + '</div>';
+  const sigT = ROLES.map(([role]) => S.sigs[skey(f, u, role)]).filter(Boolean).map(s => s.t);
+  if (sigT.length && !editing && lastChange(f, u) > Math.max.apply(null, sigT)) h += '<div class="note">Unit ' + u + ' was changed after it was signed.</div>';
+  h += '<div class="sec2">Sign-off</div><div class="hint" style="margin:8px 0 14px">By signing, the representatives confirm that the plumbing rough-in for Floor ' + f + ', Unit ' + u + ' was inspected and that the results are as recorded in the checklist.</div>';
+  ROLES.forEach(([role, who]) => {
+    const s = S.sigs[skey(f, u, role)];
+    h += '<div class="sig"><div class="sgl">' + who + '</div>';
+    if (editing && (!s || S.redo === rk)) {
+      const ur = unitRow(f, u), name = s ? s.print_name : role === 'donato' ? (ur.inspected_by || store.get('dq_name', '') || '') : '';
+      h += '<div class="pad"><canvas data-role="' + role + '"></canvas><span class="hn">Sign here with your finger</span><button type="button" class="clr" data-act="clrsig" data-role="' + role + '">Clear</button></div>' +
+        '<div class="fr"><label class="f"><input class="nm" data-role="' + role + '" placeholder=" " autocomplete="name" maxlength="200" value="' + esc(name) + '"><span>Print Name</span></label>' +
+        '<label class="f dte"><input type="date" class="dd" data-role="' + role + '" value="' + todayISO() + '"><span>Date</span></label></div>';
+    } else if (s) {
+      h += '<div class="pad done"><img crossorigin="anonymous" src="' + esc(sb.publicUrl(s.path)) + '" alt="Signature of ' + esc(s.print_name) + '"></div>' +
+        '<div class="fr"><div class="f"><div class="v">' + esc(s.print_name) + '</div><span>Print Name</span></div><div class="f dte"><div class="v">' + esc(fmtISODay(s.signed_on)) + '</div><span>Date</span></div></div>';
+    } else {
+      h += '<div class="pad done"><span class="ns">Not signed yet</span></div>';
+    }
+    h += '</div>';
+  });
+  if (both && !editing) h += '<div class="bn">✓ Unit ' + u + ' signed off</div>';
+  h += '<div class="actions">';
+  if (editing) h += '<button type="button" class="btn" data-act="savesig">Save signatures</button>' + (S.redo === rk ? '<a class="btn alt" href="#/f/' + f + '/u/' + u + '">Cancel</a>' : '');
+  else if (S.editor) h += '<button type="button" class="btn alt" data-act="redosig">Redo signatures</button>';
+  h += '<button type="button" class="btn alt" data-act="pdfunit">Export Unit ' + u + ' PDF</button></div>';
+  return h;
+};
+
+function setupPad(c) {
+  const r = c.getBoundingClientRect(), dpr = Math.max(2, window.devicePixelRatio || 1);
+  c.width = Math.max(1, Math.round(r.width * dpr)); c.height = Math.max(1, Math.round(r.height * dpr));
+  const x = c.getContext('2d');
+  x.scale(dpr, dpr); x.lineWidth = 2.6; x.lineCap = 'round'; x.lineJoin = 'round'; x.strokeStyle = '#13223a'; x.fillStyle = '#13223a';
+  let last = null, mid = null;
+  c.inked = false;
+  const pt = e => { const b = c.getBoundingClientRect(); return [e.clientX - b.left, e.clientY - b.top]; };
+  c.onpointerdown = e => {
+    e.preventDefault();
+    try { c.setPointerCapture(e.pointerId); } catch (err) { /* fine */ }
+    last = pt(e); mid = last;
+    x.beginPath(); x.arc(last[0], last[1], 1.2, 0, 7); x.fill();
+    c.inked = true; S.signDirty = true; c.parentNode.classList.add('inked');
+  };
+  c.onpointermove = e => {
+    if (!last) return;
+    const p = pt(e), m = [(last[0] + p[0]) / 2, (last[1] + p[1]) / 2];
+    x.beginPath(); x.moveTo(mid[0], mid[1]); x.quadraticCurveTo(last[0], last[1], m[0], m[1]); x.stroke();
+    last = p; mid = m;
+  };
+  c.onpointerup = c.onpointercancel = () => { last = null; };
+  c.clear = () => { x.clearRect(0, 0, c.width, c.height); c.inked = false; c.parentNode.classList.remove('inked'); };
+}
+
+// the signature without the empty space around it
+function trimCanvas(c) {
+  const x = c.getContext('2d'), d = x.getImageData(0, 0, c.width, c.height).data;
+  let x0 = c.width, y0 = c.height, x1 = -1, y1 = -1;
+  for (let y = 0; y < c.height; y++) for (let xx = 0; xx < c.width; xx++) {
+    if (d[(y * c.width + xx) * 4 + 3] > 10) { if (xx < x0) x0 = xx; if (xx > x1) x1 = xx; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+  }
+  if (x1 < 0) return c;
+  const pad = Math.round(c.height * 0.06);
+  x0 = Math.max(0, x0 - pad); y0 = Math.max(0, y0 - pad); x1 = Math.min(c.width - 1, x1 + pad); y1 = Math.min(c.height - 1, y1 + pad);
+  const o = document.createElement('canvas'); o.width = x1 - x0 + 1; o.height = y1 - y0 + 1;
+  o.getContext('2d').drawImage(c, x0, y0, o.width, o.height, 0, 0, o.width, o.height);
+  return o;
+}
+
+async function saveSignatures(f, u) {
+  const jobs = [];
+  for (const [role, who] of ROLES) {
+    const c = view.querySelector('canvas[data-role="' + role + '"]');
+    if (!c) continue;
+    const name = oneLine(view.querySelector('.nm[data-role="' + role + '"]').value), date = view.querySelector('.dd[data-role="' + role + '"]').value || todayISO();
+    if (c.inked && !name) { toast('Add the print name for the ' + who + '.'); return; }
+    if (c.inked) jobs.push({ role, name, date, c });
+  }
+  if (!jobs.length) { toast('Sign in the box first.'); return; }
+  busy('Saving signatures…');
+  try {
+    for (const j of jobs) {
+      const blob = await toBlob(trimCanvas(j.c), 'image/png');
+      const path = 'sig/f' + f + '/u' + u + '/' + j.role + '-' + Date.now() + '.png';
+      await sb.upload(path, blob, 'image/png');
+      const old = S.sigs[skey(f, u, j.role)];
+      const rows = await sb.upsert('roughin_signatures', [{ floor: f, unit: u, role: j.role, print_name: j.name, signed_on: j.date, path }], 'floor,unit,role');
+      if (rows && rows[0]) putSig(rows[0]); else scheduleRefresh();
+      applied();
+      if (old && old.path !== path) sb.removeFiles([old.path]).catch(() => {});
+      if (j.role === 'donato') store.set('dq_name', j.name);
+    }
+    S.redo = null; S.signDirty = false;
+    saveCache();
+    busy(false); render({ force: true });
+    toast(signedUnit(f, u) ? '✓ Unit ' + u + ' signed off' : '✓ Signature saved');
+  } catch (e) {
+    busy(false);
+    if (e.status === 401 || e.status === 403 || e.code === '42501') { toast(saveErrorText(e), 4200); return; }
+    toast(isNetworkError(e) ? 'No signal. The signatures are still on the screen: save again when you have signal.' : 'Couldn’t save: ' + e.message, 4600);
+  }
+}
+
+// ---------------------------------------------------------------- PDF export
+function fmtWhen(ms) {
+  const d = new Date(ms), h = d.getHours();
+  return MON[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear() + ' ' + (h % 12 || 12) + ':' + two(d.getMinutes()) + ' ' + (h >= 12 ? 'PM' : 'AM');
+}
+function fmtShortDay(iso) { if (!iso) return ''; const [y, m, d] = String(iso).split('-'); return m + '/' + d + '/' + y.slice(2); }
+
+async function fetchBlob(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error('download failed');
+  return r.blob();
+}
+
+// any picture -> JPEG bytes no bigger than maxW x maxH (on white, so a signature's clear background prints white)
+async function asJpeg(blob, maxW, maxH) {
+  const { img, done } = await loadImage(blob);
+  try {
+    const s = Math.min(1, maxW / img.naturalWidth, maxH / img.naturalHeight);
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(img.naturalWidth * s)); c.height = Math.max(1, Math.round(img.naturalHeight * s));
+    const x = c.getContext('2d');
+    x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height);
+    x.drawImage(img, 0, 0, c.width, c.height);
+    const b = await toBlob(c, 'image/jpeg', 0.8);
+    return { jpeg: new Uint8Array(await b.arrayBuffer()), w: c.width, h: c.height };
+  } finally { done(); }
+}
+
+// photos still waiting to upload on this phone, by id (so they can go in the PDF too)
+async function waitingPhotos() {
+  const out = {};
+  try { ((await Queue.all()) || []).forEach(r => { out[r.id] = r; }); } catch (e) { /* no storage */ }
+  Object.keys(MEM).forEach(id => { if (!out[id]) out[id] = MEM[id]; });
+  return out;
+}
+
+async function pdfPhoto(p, waiting) {
+  if (p.pending) {
+    const rec = waiting[p.id];
+    if (rec && rec.main) return asJpeg(rec.main, 1000, 1000);
+    throw new Error('not on this phone');
+  }
+  const saved = S.photos[p.id];
+  try { return await asJpeg(await fetchBlob(sb.publicUrl(saved.path)), 1000, 1000); }
+  catch (e) { return asJpeg(await fetchBlob(sb.publicUrl(thumbOf(saved.path))), 1000, 1000); }
+}
+
+// everything one unit's report shows; onPhoto is called after each photo
+async function unitReportData(f, u, waiting, onPhoto) {
+  const ql = QL(), st = unitStats(f, u), ur = unitRow(f, u), day = todayISO();
+  let ok = 0, na = 0;
+  const sections = ql.secs.map(sec => ({ name: sec.name, items: sec.items.map(q => {
+    const r = ansRow(f, u, q.id), a = r && r.answer ? r.answer : null, res = resultOf(a, q.pa);
+    if (res === 'ok') ok++; else if (res === 'na') na++;
+    return { n: q.n, question: q.question, answer: a, res };
+  }) }));
+  const defs = [];
+  for (const q of ql.list) {
+    const r = ansRow(f, u, q.id);
+    if (!r || resultOf(r.answer, q.pa) !== 'def') continue;
+    const photos = [], list = photosOf(f, u, q.id);
+    for (let k = 0; k < list.length; k++) {
+      const p = list[k], saved = S.photos[p.id], taken = saved ? saved.taken : null;
+      const label = 'Photo ' + (k + 1) + (taken ? ' · ' + fmtWhen(taken) : p.pending ? ' · not uploaded yet' : '');
+      try { photos.push(Object.assign({ label }, await pdfPhoto(p, waiting))); } catch (e) { photos.push({ label, jpeg: null }); }
+      if (onPhoto) onPhoto();
+    }
+    defs.push({ ref: 'U' + two(u) + '-' + two(q.n), section: q.section, question: q.question, st: defStatus(r, day), notes: r.notes, corrective: r.corrective_action,
+      responsible: r.responsible, due: fmtISODay(r.due_date), corrected: fmtISODay(r.corrected_on), verified: r.verified_by, photos });
+  }
+  const sigs = {};
+  for (const [role] of ROLES) {
+    const s = S.sigs[skey(f, u, role)];
+    if (!s) continue;
+    let j = {};
+    try { j = await asJpeg(await fetchBlob(sb.publicUrl(s.path)), 1200, 400); } catch (e) { j = {}; }
+    sigs[role] = { name: s.print_name, date: fmtISODay(s.signed_on), jpeg: j.jpeg || null, w: j.w, h: j.h };
+  }
+  return { floor: f, unit: u, project: S.project.project_location, inspectedOn: fmtISODay(ur.inspected_on), inspectedBy: ur.inspected_by, comments: ur.comments,
+    stats: Object.assign({ ok, na }, st), sections, defs, sigs };
+}
+
+function photoCount(f, u) {
+  let n = 0;
+  QL().list.forEach(q => { const r = ansRow(f, u, q.id); if (r && resultOf(r.answer, q.pa) === 'def') n += photosOf(f, u, q.id).length; });
+  return n;
+}
+
+let letterheadBytes = null;
+async function letterheadJpeg() {
+  if (!letterheadBytes) letterheadBytes = new Uint8Array(await (await fetchBlob('letterhead.jpg')).arrayBuffer());
+  return letterheadBytes;
+}
+
+let exporting = false;
+async function exportUnit(f, u) {
+  if (exporting) return;
+  exporting = true;
+  try {
+    busy('Building PDF…');
+    const lh = await letterheadJpeg(), waiting = await waitingPhotos(), n = photoCount(f, u);
+    let k = 0;
+    const data = await unitReportData(f, u, waiting, () => busy('Building PDF… photo ' + (++k) + ' of ' + n));
+    const bytes = buildUnitPdf(data, lh, 'Plumbing Rough-In QA/QC - Floor ' + f + ', Unit ' + u, fmtWhen(Date.now()));
+    busy(false);
+    pdfReady('Floor ' + f + ', Unit ' + u + ' PDF', 'Floor ' + f + ' Unit ' + u + ' - Plumbing Rough-In QAQC.pdf', bytes);
+  } catch (e) {
+    busy(false);
+    toast('Couldn’t build the PDF. ' + (isNetworkError(e) ? 'Check your signal and try again.' : e.message), 4200);
+  }
+  exporting = false;
+}
+
+async function exportFloor(f) {
+  if (exporting) return;
+  exporting = true;
+  try {
+    busy('Building PDF…');
+    const fl = floorOf(f), st = floorStats(fl), ql = QL(), lh = await letterheadJpeg(), waiting = await waitingPhotos(), now = Date.now();
+    const units = [];
+    for (let u = 1; u <= fl.units; u++) {
+      const us = unitStats(f, u), ur = unitRow(f, u);
+      units.push({ unit: u, inspectedOn: fmtISODay(ur.inspected_on), inspectedBy: ur.inspected_by, answered: us.answered, total: us.total, open: us.open, result: us.result, signed: signedUnit(f, u),
+        include: us.answered > 0 || ROLES.some(([role]) => S.sigs[skey(f, u, role)]) });
+    }
+    const all = floorDefs(fl);
+    const defs = all.map(d => ({ ref: 'U' + two(d.u) + '-' + two(d.q.n), section: d.q.section, question: d.q.question, notes: d.r.notes, corrective: d.r.corrective_action,
+      responsible: d.r.responsible, dueShort: fmtShortDay(d.r.due_date), st: d.st }));
+    const by = {};
+    all.forEach(d => { const b = by[d.q.section] || (by[d.q.section] = { total: 0, open: 0 }); b.total++; if (d.st !== 'closed') b.open++; });
+    const bySection = ql.secs.map(s => ({ name: s.name, total: (by[s.name] || {}).total || 0, open: (by[s.name] || {}).open || 0 }));
+    const day = new Date(now);
+    const data = { floor: f, project: S.project.project_location, exported: fmtWhen(now), exportedDay: MON[day.getMonth()] + ' ' + day.getDate() + ', ' + day.getFullYear(),
+      stats: Object.assign({ signed: signedCount(fl) }, st), units, defs, bySection };
+    const nIn = units.filter(x => x.include).length;
+    let k = 0;
+    const bytes = await buildFloorPdf(data, lh, 'Plumbing Rough-In QA/QC - Floor ' + f,
+      i => { busy('Building PDF… unit ' + (++k) + ' of ' + nIn); return unitReportData(f, i + 1, waiting); });
+    busy(false);
+    pdfReady('Floor ' + f + ' PDF', 'Floor ' + f + ' - Plumbing Rough-In QAQC.pdf', bytes);
+  } catch (e) {
+    busy(false);
+    toast('Couldn’t build the PDF. ' + (isNetworkError(e) ? 'Check your signal and try again.' : e.message), 4200);
+  }
+  exporting = false;
+}
+
+function pdfReady(title, name, bytes) {
+  const file = new File([bytes], name, { type: 'application/pdf' });
+  const url = URL.createObjectURL(file);
+  let canShare = false;
+  try { canShare = !!(navigator.canShare && navigator.canShare({ files: [file] })); } catch (e) { canShare = false; }
+  window.lastPdf = bytes;                                 // for the tests
+  openSheet('<div class="sh-title">' + esc(title) + ' is ready</div>' +
+    (canShare ? '<button type="button" class="sh-btn strong" id="shr">Share or save</button>' : '') +
+    '<a class="sh-btn' + (canShare ? '' : ' strong') + '" href="' + url + '" download="' + esc(name) + '" target="_blank" rel="noopener">Open PDF</a>' +
+    '<button type="button" class="sh-btn cancel" id="cls">Close</button>', (el, close) => {
+    $('#cls', el).onclick = () => { close(); setTimeout(() => URL.revokeObjectURL(url), 60000); };
+    const b = $('#shr', el);
+    if (b) b.onclick = async () => { try { await navigator.share({ files: [file], title: name }); } catch (e) { /* cancelled */ } };
+  });
+}
+
 // ---------------------------------------------------------------- punch list
 VIEWS.punch = r => {
   const fl = floorOf(r.floor), f = fl.floor, ql = QL(), all = floorDefs(fl);
@@ -1331,6 +1657,12 @@ view.addEventListener('click', e => {
   else if (act === 'filter') { S.pf = b.dataset.v; render({ force: true }); }
   else if (act === 'viewph') { if (S.pend[b.dataset.id]) pendingPhoto(b.dataset.id); else viewPhoto(b.dataset.id); }
   else if (act === 'addph' && r.view === 'detail' && S.editor) addPhoto(r);
+  else if (act === 'gosign' && r.view === 'unit') goSign(r.floor, r.unit);
+  else if (act === 'pdfunit' && (r.view === 'unit' || r.view === 'sign')) exportUnit(r.floor, r.unit);
+  else if (act === 'pdffloor' && r.view === 'floor') exportFloor(r.floor);
+  else if (act === 'clrsig') { const c = view.querySelector('canvas[data-role="' + b.dataset.role + '"]'); if (c) c.clear(); }
+  else if (act === 'savesig' && r.view === 'sign' && S.editor) saveSignatures(r.floor, r.unit);
+  else if (act === 'redosig' && r.view === 'sign' && S.editor) { S.redo = r.floor + '-' + r.unit; render({ force: true }); }
   else if (act === 'setdate' && r.view === 'detail') {
     const k = b.dataset.k, v = b.dataset.v === 'today' ? todayISO() : '', inp = view.querySelector('[data-df="' + k + '"]');
     if (inp) inp.value = v;
@@ -1371,7 +1703,7 @@ view.addEventListener('change', e => {
   else draftInput(el);
 });
 
-view.addEventListener('input', e => draftInput(e.target));
+view.addEventListener('input', e => { if (curRoute.view === 'sign' && e.target.classList.contains('nm')) S.signDirty = true; draftInput(e.target); });
 
 view.addEventListener('keydown', e => {
   if (e.key === 'Enter' && e.target.dataset && e.target.dataset.ren) { e.preventDefault(); renameSection(); }
@@ -1390,7 +1722,7 @@ async function signOut() {
 }
 
 // ---------------------------------------------------------------- start screen
-const live = new Live(sb, 'qaqc-roughin', ['roughin_questions', 'roughin_answers', 'roughin_units', 'roughin_project', 'roughin_photos'], onLiveChange, up => {
+const live = new Live(sb, 'qaqc-roughin', ['roughin_questions', 'roughin_answers', 'roughin_units', 'roughin_project', 'roughin_photos', 'roughin_signatures'], onLiveChange, up => {
   S.live = up;
   const l = $('.live');
   if (l) { l.classList.toggle('up', up); l.lastChild.textContent = up ? 'Live' : 'Connecting'; }
