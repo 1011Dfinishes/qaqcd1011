@@ -8,7 +8,7 @@ const NEW_SECTION = '__new__';
 const ANSWERS = [['Y', 'Y', 'Yes'], ['N', 'N', 'No'], ['NA', 'N/A', 'Not applicable']];
 const BLANK_A = { answer: null, notes: '', corrective_action: '', responsible: '', due_date: null, corrected_on: null, verified_by: '' };
 const BLANK_U = { inspected_on: null, inspected_by: '', comments: '' };
-const PHOTO_MAX = 12;             // photos per deficiency
+const PHOTO_MAX = 12;             // photos per error
 const DATE_FIELDS = { due_date: 1, corrected_on: 1, inspected_on: 1 };
 const DEPTH = { home: 0, floor: 1, questions: 1, unit: 2, punch: 2, qnew: 2, qedit: 2, detail: 3, sign: 3 };
 const ROLES = [['donato', 'Donato Representative'], ['ccm', 'CCM Representative']];
@@ -59,7 +59,7 @@ const S = {
   ans: {},              // saved answers by "floor|unit|question"
   units: {},            // saved unit records by "floor|unit"
   project: { project_location: '', t: 0 },
-  photos: {},           // saved photos of deficiencies, by id
+  photos: {},           // saved photos of errors, by id
   sigs: {},             // sign-off signatures by "floor|unit|role"
   pend: {},             // photos still waiting to upload, by their local id
   blob: {},             // previews of photos uploaded from this phone, by file path
@@ -615,8 +615,8 @@ VIEWS.floor = r => {
     '<div class="' + (st.prog ? 'n' : 'z') + '"><b>' + st.prog + '</b><span>In progress</span></div><div class="z"><b>' + st.none + '</b><span>Not started</span></div></div>';
   h += '<div class="ul"><a class="uc nb" href="#/f/' + f + '/punch"><div class="urw"><span>Punch list</span>' +
     (st.open ? '<span class="pill warn">' + st.open + ' open</span>' : '<span class="pill todo">None open</span>') + '</div>' +
-    '<div class="mt">' + (st.defs ? plural(st.defs, 'deficiency', 'deficiencies') + ' on this floor' + (st.overdue ? ' · <span class="red">' + st.overdue + ' overdue</span>' : '') + (st.closed ? ' · ' + st.closed + ' closed' : '')
-      : 'No deficiencies on this floor') + '</div></a></div>';
+    '<div class="mt">' + (st.defs ? plural(st.defs, 'error', 'errors') + ' on this floor' + (st.overdue ? ' · <span class="red">' + st.overdue + ' overdue</span>' : '') + (st.closed ? ' · ' + st.closed + ' closed' : '')
+      : 'No errors on this floor') + '</div></a></div>';
   h += '<div class="sh"><i class="dot on"></i>UNITS</div><div class="ul two">';
   for (let u = 1; u <= fl.units; u++) {
     const us = unitStats(f, u);
@@ -635,8 +635,8 @@ function unitCount(st) { return st.answered + ' of ' + st.total + ' answered' + 
 function unitResLine(st) {
   let t;
   if (st.result === 'none') t = 'Nothing answered yet';
-  else if (st.result === 'pass') t = 'All ' + st.total + ' items answered, no open deficiencies';
-  else if (st.result === 'fail') t = plural(st.open, 'open deficiency', 'open deficiencies') + (st.overdue ? ' · ' + st.overdue + ' overdue' : '');
+  else if (st.result === 'pass') t = 'All ' + st.total + ' items answered, no open errors';
+  else if (st.result === 'fail') t = plural(st.open, 'open error', 'open errors') + (st.overdue ? ' · ' + st.overdue + ' overdue' : '');
   else t = plural(st.total - st.answered, 'item', 'items') + ' left to answer';
   if (st.closed) t += ' · ' + st.closed + ' closed';
   return resPill(st.result) + '<span>' + t + '</span>';
@@ -651,7 +651,7 @@ function secCount(f, u, sec) {
 
 function defBlock(f, u, q, r) {
   const st = defStatus(r), ed = S.editor, tag = ed ? 'button' : 'div';
-  let h = '<' + tag + (ed ? ' type="button" data-det="' + q.id + '"' : '') + ' class="df ' + st + '"><span class="dh"><b>Deficiency</b>' + defPill(st) +
+  let h = '<' + tag + (ed ? ' type="button" data-det="' + q.id + '"' : '') + ' class="df ' + st + '"><span class="dh"><b>Error</b>' + defPill(st) +
     (ed ? '<span class="dl">' + (hasDetails(r) || photosOf(f, u, q.id).length ? 'Edit details' : 'Add details') + ' ›</span>' : '') + '</span>';
   h += defDetails(r) + photoStrip(f, u, q.id);
   return h + '</' + tag + '>';
@@ -754,10 +754,10 @@ VIEWS.detail = r => {
   const isDef = !!q && resultOf(row.answer, q.pa) === 'def';
   const back = S.detailBack === '#/f/' + f + '/punch' ? [S.detailBack, 'Punch list'] : ['#/f/' + f + '/u/' + u + '/q/' + r.q, 'Unit ' + u];
   let h = '<div class="srow"><a class="bk" href="' + back[0] + '">' + BACK + back[1] + '</a><span id="dStatus">' + (isDef ? defPill(defStatus(row)) : '') + '</span></div>' + pendingNote();
-  if (!isDef) return h + '<div class="empty">This item isn’t marked as a deficiency any more.</div>';
+  if (!isDef) return h + '<div class="empty">This item isn’t marked as an error any more.</div>';
   h += '<div class="qsec">' + esc(q.section) + ' · Item ' + q.n + '</div><div class="qq">' + esc(q.question) + '</div>' +
     '<div class="mt">Floor ' + f + ' · Unit ' + u + ' · Answer: ' + (row.answer === 'Y' ? 'Yes' : 'No') + '</div>';
-  h += '<label class="lab" for="dfNotes">Notes / deficiency</label><textarea class="inp ta" id="dfNotes" data-df="notes" maxlength="2000" placeholder="What is wrong, and where">' + esc(row.notes) + '</textarea>';
+  h += '<label class="lab" for="dfNotes">Notes / error</label><textarea class="inp ta" id="dfNotes" data-df="notes" maxlength="2000" placeholder="What is wrong, and where">' + esc(row.notes) + '</textarea>';
   h += '<div class="lab">Photos</div><div class="pgrid" id="phBox">' + photoTiles(f, u, r.q) + '</div>';
   h += '<label class="lab" for="dfFix">Corrective action</label><textarea class="inp ta" id="dfFix" data-df="corrective_action" maxlength="2000" placeholder="What has to be done to fix it" style="min-height:66px">' + esc(row.corrective_action) + '</textarea>';
   h += '<label class="lab" for="dfResp">Responsible</label><input class="inp" id="dfResp" data-df="responsible" maxlength="200" autocomplete="off" placeholder="Who will fix it" value="' + esc(row.responsible) + '">';
@@ -767,7 +767,7 @@ VIEWS.detail = r => {
   h += '<label class="lab" for="dfCor">Corrected on</label><div class="row2"><input type="date" class="inp" id="dfCor" data-df="corrected_on" value="' + esc(row.corrected_on || '') + '">' +
     '<button type="button" class="mini" data-act="setdate" data-k="corrected_on" data-v="today">Today</button><button type="button" class="mini" data-act="setdate" data-k="corrected_on" data-v="">Clear</button></div>';
   h += '<label class="lab" for="dfVer">Verified by</label><input class="inp" id="dfVer" data-df="verified_by" maxlength="200" autocomplete="off" placeholder="Who checked the fix" value="' + esc(row.verified_by) + '">';
-  h += '<div class="fnote">Changes save by themselves. A deficiency is Closed once “Corrected on” has a date, and Overdue once its due date has passed.</div>';
+  h += '<div class="fnote">Changes save by themselves. An error is Closed once “Corrected on” has a date, and Overdue once its due date has passed.</div>';
   h += '<div class="actions"><a class="btn" href="' + back[0] + '">Done</a></div>';
   return h;
 };
@@ -1093,7 +1093,7 @@ async function goSign(f, u) {
 }
 function notPassedText(st) {
   const bits = [];
-  if (st.open) bits.push(plural(st.open, 'open deficiency', 'open deficiencies'));
+  if (st.open) bits.push(plural(st.open, 'open error', 'open errors'));
   if (st.total > st.answered) bits.push(plural(st.total - st.answered, 'item', 'items') + ' not answered');
   return bits.length ? 'It has ' + bits.join(' and ') + '.' : '';
 }
@@ -1387,7 +1387,7 @@ VIEWS.punch = r => {
   h += '<div class="chips">' + [['open', 'Open', nOpen], ['closed', 'Closed', nClosed], ['all', 'All', all.length]].map(c =>
     '<button type="button" class="chip' + (S.pf === c[0] ? ' on' : '') + '" data-act="filter" data-v="' + c[0] + '" aria-pressed="' + (S.pf === c[0]) + '">' + c[1] + ' ' + c[2] + '</button>').join('') + '</div>';
   if (!shown.length) {
-    h += '<div class="empty" style="padding:34px 10px">' + (!all.length ? 'No deficiencies on Floor ' + f + '.' : S.pf === 'open' ? 'No open deficiencies on Floor ' + f + '. ✓' : 'No closed deficiencies on Floor ' + f + ' yet.') + '</div>';
+    h += '<div class="empty" style="padding:34px 10px">' + (!all.length ? 'No errors on Floor ' + f + '.' : S.pf === 'open' ? 'No open errors on Floor ' + f + '. ✓' : 'No closed errors on Floor ' + f + ' yet.') + '</div>';
   }
   let unit = 0;
   shown.forEach(d => {
@@ -1398,7 +1398,7 @@ VIEWS.punch = r => {
   if (all.length) {
     const by = {};
     all.forEach(d => { const b = by[d.q.section] || (by[d.q.section] = [0, 0]); b[0]++; if (d.st !== 'closed') b[1]++; });
-    h += '<div class="sec2" style="margin-bottom:2px">Deficiencies by section</div><table class="bs">' +
+    h += '<div class="sec2" style="margin-bottom:2px">Errors by section</div><table class="bs">' +
       ql.secs.map(s => { const b = by[s.name] || [0, 0]; return '<tr><td>' + esc(s.name) + '</td><td class="n">' + b[0] + ' total</td><td class="n">' + (b[1] ? '<span class="red">' + b[1] + ' open</span>' : '0 open') + '</td></tr>'; }).join('') +
       '<tr class="tot"><td>All sections</td><td class="n">' + all.length + ' total</td><td class="n">' + nOpen + ' open</td></tr></table>';
   }
@@ -1459,7 +1459,7 @@ function qform(r) {
     '<option value="' + NEW_SECTION + '"' + (d.section === NEW_SECTION ? ' selected' : '') + '>New section…</option></select>';
   h += '<input class="inp" id="qfNew" data-qf="newSection" maxlength="80" autocomplete="off" placeholder="Name of the new section" aria-label="Name of the new section" value="' + esc(d.newSection) + '" style="margin-top:8px' + (d.section === NEW_SECTION ? '' : ';display:none') + '">';
   h += '<div class="lab">Which answer is the problem?</div>' + [
-    ['N', 'No', 'A “No” answer is flagged as a deficiency. Most questions work this way.'],
+    ['N', 'No', 'A “No” answer is flagged as an error. Most questions work this way.'],
     ['Y', 'Yes', 'A “Yes” answer is flagged. For questions that ask about a problem, like “…obstructed?”'],
     ['None', 'Neither', 'Information only. No answer is ever flagged.']
   ].map(o => '<button type="button" class="opt' + (d.pa === o[0] ? ' on' : '') + '" data-act="opt" data-v="' + o[0] + '" aria-pressed="' + (d.pa === o[0]) + '"><i></i><span><b>' + o[1] + '</b>' + o[2] + '</span></button>').join('');
@@ -1859,7 +1859,7 @@ async function start() {
     ticks++;
     flush(); flushPhotos();
     if (!S.live || ticks % 10 === 0) checkVersion();                 // every 30 s while not live, every 5 minutes otherwise
-    if (S.day !== todayISO()) { S.day = todayISO(); bump(); scheduleRender(); }     // a new day can make a deficiency overdue
+    if (S.day !== todayISO()) { S.day = todayISO(); bump(); scheduleRender(); }     // a new day can make an error overdue
   }, 30000);
   window.addEventListener('online', () => { live.kick(); flush(); flushPhotos(); checkVersion(); });
   window.addEventListener('offline', () => scheduleRender());

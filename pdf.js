@@ -304,7 +304,7 @@ function unitReport(doc, lh, u) {
     { label: 'ANSWERED', value: st.answered + ' / ' + st.total, color: st.answered >= st.total && st.total ? GREEN : 0 },
     { label: 'OK', value: String(st.ok), color: st.ok ? GREEN : LIGHT },
     { label: 'N/A', value: String(st.na), color: st.na ? GREY : LIGHT },
-    { label: 'DEFICIENCIES', value: String(st.defs), color: st.defs ? RED : LIGHT },
+    { label: 'ERRORS', value: String(st.defs), color: st.defs ? RED : LIGHT },
     { label: 'OPEN', value: String(st.open), color: st.open ? AMBER : LIGHT, fill: st.open ? WARN_FILL : null },
     { label: 'OVERDUE', value: String(st.overdue), color: st.overdue ? RED : LIGHT, fill: st.overdue ? DEF_FILL : null },
     { label: 'CLOSED', value: String(st.closed), color: st.closed ? GREEN : LIGHT }
@@ -357,7 +357,7 @@ function unitReport(doc, lh, u) {
           pCross(pp, bx, by, BOX, 1.1, 1);
         } else pRect(pp, bx, by, BOX, BOX, 0.6, FRAME);
       });
-      if (it.res === 'def') pTextC(pp, cR + wR / 2, top - 11.5, 'DEFICIENCY', 'B', 7.6, RED);
+      if (it.res === 'def') pTextC(pp, cR + wR / 2, top - 11.5, 'ERROR', 'B', 7.6, RED);
       else if (it.res === 'ok') pTextC(pp, cR + wR / 2, top - 11.5, 'OK', 'B', 8.5, GREEN);
       else if (it.res === 'na') pTextC(pp, cR + wR / 2, top - 11.5, 'N/A', 'R', 8.5, GREY);
       else pTextC(pp, cR + wR / 2, top - 11.5, '—', 'R', 8.5, LIGHT);
@@ -370,11 +370,11 @@ function unitReport(doc, lh, u) {
 
   // deficiencies, with details and photos
   if (u.defs.length) {
-    const defHead = () => heading(fl, 'DEFICIENCIES', plural2(u.defs.length, 'deficiency', 'deficiencies') + '  ·  ' + st.open + ' open' + (st.overdue ? '  ·  ' + st.overdue + ' overdue' : '') + '  ·  ' + st.closed + ' closed');
+    const defHead = () => heading(fl, 'ERRORS', plural2(u.defs.length, 'error', 'errors') + '  ·  ' + st.open + ' open' + (st.overdue ? '  ·  ' + st.overdue + ' overdue' : '') + '  ·  ' + st.closed + ' closed');
     u.defs.forEach((d, di) => {
       const qLines = wrapText(d.question, 'I', 10.5, PTW - 12);
       const LW = 104, VW = PTW - LW - 12, VL = 12;
-      const longs = [['Notes / deficiency:', d.notes], ['Corrective action:', d.corrective]].map(([l, v]) => [l, wrapText(v || '—', 'R', 10, VW)]);
+      const longs = [['Notes / error:', d.notes], ['Corrective action:', d.corrective]].map(([l, v]) => [l, wrapText(v || '—', 'R', 10, VW)]);
       // keep the heading, the text and the first row of photos together when they fit on one page
       const GAP = 10, PER = 3, CW = (PTW - 12 - (PER - 1) * GAP) / PER, MAXH = CW * 0.92;
       const sized = d.photos.map(ph => {
@@ -385,7 +385,7 @@ function unitReport(doc, lh, u) {
       const textH = 22 + qLines.length * 13 + 8 + longs.reduce((t, l) => t + l[1].length * VL + 3, 0) + 2 * VL + 6;
       const whole = textH + (sized.length ? rowH(0) : 0);
       const need = whole <= PH - 230 ? whole : 22 + qLines.length * 13 + 8 + 2 * VL;
-      if (di === 0) { fl.ensure(27 + need); defHead(); fl.cont = () => heading(fl, 'DEFICIENCIES (continued)'); }      // the heading stays with the first one
+      if (di === 0) { fl.ensure(27 + need); defHead(); fl.cont = () => heading(fl, 'ERRORS (continued)'); }      // the heading stays with the first one
       else fl.ensure(need);
       let pp = fl.p, top = fl.y;
       // header strip
@@ -528,7 +528,7 @@ async function buildFloorPdf(f, letterheadJpeg, title, loadUnit) {
     { label: 'FAILED', value: String(s.fail), color: s.fail ? RED : LIGHT },
     { label: 'IN PROGRESS', value: String(s.prog), color: s.prog ? NAVY : LIGHT },
     { label: 'NOT STARTED', value: String(s.none), color: s.none ? GREY : LIGHT },
-    { label: 'DEFICIENCIES', value: String(s.defs), color: s.defs ? RED : LIGHT },
+    { label: 'ERRORS', value: String(s.defs), color: s.defs ? RED : LIGHT },
     { label: 'OPEN', value: String(s.open), color: s.open ? AMBER : LIGHT, fill: s.open ? WARN_FILL : null },
     { label: 'OVERDUE', value: String(s.overdue), color: s.overdue ? RED : LIGHT, fill: s.overdue ? DEF_FILL : null },
     { label: 'SIGNED OFF', value: s.signed + ' / ' + n, color: s.signed ? GREEN : LIGHT }
@@ -584,8 +584,8 @@ async function buildFloorPdf(f, letterheadJpeg, title, loadUnit) {
     fl.y -= h;
   };
   const nOpen = f.defs.filter(d => d.st !== 'closed').length, nOver = f.defs.filter(d => d.st === 'overdue').length;
-  heading(fl, 'PUNCH LIST', plural2(f.defs.length, 'deficiency', 'deficiencies') + '  ·  ' + nOpen + ' open' + (nOver ? '  ·  ' + nOver + ' overdue' : ''));
-  if (!f.defs.length) { pText(fl.p, PL, fl.y - 12, 'No deficiencies on Floor ' + f.floor + '.', 'I', 11, GREY); fl.y -= 22; }
+  heading(fl, 'PUNCH LIST', plural2(f.defs.length, 'error', 'errors') + '  ·  ' + nOpen + ' open' + (nOver ? '  ·  ' + nOver + ' overdue' : ''));
+  if (!f.defs.length) { pText(fl.p, PL, fl.y - 12, 'No errors on Floor ' + f.floor + '.', 'I', 11, GREY); fl.y -= 22; }
   else {
     punchHead();
     fl.cont = () => { heading(fl, 'PUNCH LIST (continued)'); punchHead(); };
@@ -615,7 +615,7 @@ async function buildFloorPdf(f, letterheadJpeg, title, loadUnit) {
     // deficiencies by section
     fl.y -= 22;
     fl.ensure(27 + 16 + (f.bySection.length + 1) * 15);
-    heading(fl, 'DEFICIENCIES BY SECTION');
+    heading(fl, 'ERRORS BY SECTION');
     const sc = [PL + 4, PR - 150, PR - 4];
     f.bySection.concat([{ name: 'All sections', total: f.defs.length, open: nOpen, tot: true }]).forEach(b => {
       fl.ensure(15);
