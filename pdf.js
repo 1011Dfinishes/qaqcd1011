@@ -6,7 +6,8 @@
 // character widths of the three Times fonts (from the Finishes app)
 const TIMES_WIDTHS = {"Times-Roman": [250, 333, 408, 500, 500, 833, 778, 180, 333, 333, 500, 564, 250, 333, 250, 278, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 278, 278, 564, 564, 564, 444, 921, 722, 667, 667, 722, 611, 556, 722, 722, 333, 389, 722, 611, 889, 722, 722, 556, 722, 667, 556, 611, 722, 722, 944, 722, 722, 611, 333, 278, 333, 469, 500, 333, 444, 500, 444, 500, 444, 333, 500, 500, 278, 278, 500, 278, 778, 500, 500, 500, 500, 333, 389, 278, 500, 500, 722, 500, 500, 444, 480, 200, 480, 541], "Times-Bold": [250, 333, 555, 500, 500, 1000, 833, 278, 333, 333, 500, 570, 250, 333, 250, 278, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 333, 333, 570, 570, 570, 500, 930, 722, 667, 722, 722, 667, 611, 778, 778, 389, 500, 778, 667, 944, 722, 778, 611, 778, 722, 556, 667, 722, 722, 1000, 722, 722, 667, 333, 278, 333, 581, 500, 333, 500, 556, 444, 556, 444, 333, 500, 556, 278, 333, 556, 278, 833, 556, 500, 556, 556, 444, 389, 333, 556, 500, 722, 500, 500, 444, 394, 220, 394, 520], "Times-Italic": [250, 333, 420, 500, 500, 833, 778, 214, 333, 333, 500, 675, 250, 333, 250, 278, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 333, 333, 675, 675, 675, 500, 920, 611, 611, 667, 722, 611, 611, 722, 722, 333, 444, 667, 556, 833, 667, 722, 611, 722, 611, 500, 556, 722, 611, 833, 611, 556, 556, 389, 278, 389, 422, 500, 333, 500, 500, 444, 500, 444, 278, 500, 500, 278, 278, 444, 278, 722, 500, 500, 500, 500, 389, 389, 278, 500, 444, 667, 444, 444, 389, 400, 275, 400, 541]};
 
-const PDF_FONTS = { R: 'Times-Roman', B: 'Times-Bold', I: 'Times-Italic' };
+const PDF_FONTS = { R: 'Times-Roman', B: 'Times-Bold', I: 'Times-Italic' };        // width tables
+const TNR = { R: ['TimesNewRomanPSMT', 34, 0, 82], B: ['TimesNewRomanPS-BoldMT', 34 + 262144, 0, 136], I: ['TimesNewRomanPS-ItalicMT', 98, -16.33, 76] };
 const WINANSI = { '–': 150, '—': 151, '‘': 145, '’': 146, '“': 147, '”': 148, '•': 149, '…': 133, '€': 128 };
 
 function pdfBytes(str) {                       // text -> WinAnsi bytes (anything else prints as ?)
@@ -35,7 +36,7 @@ function pdfStr(str) {
 function textWidth(str, font, size) {
   const w = TIMES_WIDTHS[PDF_FONTS[font]];
   let t = 0;
-  for (const b of pdfBytes(str)) t += (b >= 32 && b <= 126) ? w[b - 32] : b === 183 ? 250 : b === 150 ? 500 : b === 151 ? 1000 : b >= 145 && b <= 148 ? 333 : 500;
+  for (const b of pdfBytes(str)) t += (b >= 32 && b <= 126) ? w[b - 32] : b === 183 ? 250 : b === 160 ? 250 : b === 150 ? 500 : b === 151 || b === 133 ? 1000 : b === 149 ? 350 : b >= 145 && b <= 148 ? 333 : 500;
   return t * size / 1000;
 }
 
@@ -117,7 +118,7 @@ class PdfDoc {
     const catalog = alloc(), pagesObj = alloc(), info = alloc();
     const outlinesObj = this.outline.length ? alloc() : 0;
     const outlineObjs = this.outline.map(() => alloc());
-    const fontObj = { R: alloc(), B: alloc(), I: alloc() };
+    const fontObj = { R: alloc(), B: alloc(), I: alloc() }, descObj = { R: alloc(), B: alloc(), I: alloc() };
     const imgObj = this.images.map(() => alloc());
     const pageObjs = this.pages.map(p => ({ page: alloc(), content: alloc(), links: p.links.map(() => alloc()) }));
     const dest = i => '[' + pageObjs[i].page + ' 0 R /Fit]';
@@ -139,8 +140,12 @@ class PdfDoc {
         end();
       });
     }
+    // Times New Roman, named so the phone or computer uses its own copy (it has the same letter widths as Times)
     for (const k of Object.keys(fontObj)) {
-      begin(fontObj[k]); put('<< /Type /Font /Subtype /Type1 /BaseFont /' + PDF_FONTS[k] + ' /Encoding /WinAnsiEncoding >>'); end();
+      const [name, flags, angle, stem] = TNR[k], w = [];
+      for (let c = 32; c <= 255; c++) w.push(Math.round(textWidth(String.fromCharCode(c === 133 ? 8230 : c === 145 ? 8216 : c === 146 ? 8217 : c === 147 ? 8220 : c === 148 ? 8221 : c === 150 ? 8211 : c === 151 ? 8212 : c === 149 ? 8226 : c), k, 1000)));
+      begin(fontObj[k]); put('<< /Type /Font /Subtype /TrueType /BaseFont /' + name + ' /FirstChar 32 /LastChar 255 /Widths [' + w.join(' ') + '] /FontDescriptor ' + descObj[k] + ' 0 R /Encoding /WinAnsiEncoding >>'); end();
+      begin(descObj[k]); put('<< /Type /FontDescriptor /FontName /' + name + ' /Flags ' + flags + ' /FontBBox [-568 -307 2000 1007] /ItalicAngle ' + angle + ' /Ascent 891 /Descent -216 /CapHeight 662 /StemV ' + stem + ' >>'); end();
     }
     this.images.forEach((im, i) => {
       const cs = im.comps === 1 ? '/DeviceGray' : im.comps === 4 ? '/DeviceCMYK' : '/DeviceRGB';
@@ -194,6 +199,17 @@ function pCross(p, x, y, s, w, color) {         // an X inside the square at (x,
   p.ops.push(strokeC(color) + ' ' + f2(w) + ' w [] 0 d 1 J ' + f2(x + a) + ' ' + f2(y + a) + ' m ' + f2(x + b) + ' ' + f2(y + b) + ' l ' + f2(x + a) + ' ' + f2(y + b) + ' m ' + f2(x + b) + ' ' + f2(y + a) + ' l S 0 J');
 }
 
+// The box filled in with a pen: back-and-forth strokes in dark ink that cover the box.
+function pFillPen(p, bx, by, s, seed) {
+  const r = k => { const v = Math.sin(seed * 12.9898 + k * 78.233) * 43758.5453; return (v - Math.floor(v)) - 0.5; };
+  let d = ''; const n = 9;
+  for (let i = 0; i <= n; i++) {
+    const yy = by + 0.9 + i / n * (s - 1.8) + 0.15 * r(i + 9), L = bx + 0.9 + 0.35 * r(i), R = bx + s - 0.9 + 0.35 * r(i + 20);
+    d += (i ? f2(i % 2 ? R : L) + ' ' + f2(yy) + ' l ' : f2(L) + ' ' + f2(yy) + ' m ') + f2(i % 2 ? L : R) + ' ' + f2(yy + 0.15 * r(i + 40)) + ' l ';
+  }
+  p.ops.push('0.1 0.12 0.22 RG 1.25 w 1 J 1 j ' + d + 'S 0 J 0 j');
+}
+
 // ---------- page layout (US Letter, same frame as the Finishes photo book)
 const PW = 612, PH = 792, PL = 54, PR = 558, PTW = PR - PL;
 const FOOTER_Y = 46, BOTTOM = FOOTER_Y + 16;
@@ -218,8 +234,7 @@ function letterhead(p, lh) {
 // letterhead + "PLUMBING ROUGH-IN QA/QC ... FLOOR 6 · UNIT 4"; returns where the page's content starts
 function pageHeader(p, lh, right) {
   const y = letterhead(p, lh) - 26;
-  pText(p, PL, y, 'PLUMBING ROUGH-IN QA/QC', 'B', 15);
-  pTextR(p, PR, y, right, 'B', 15);
+  pText(p, PL, y, right, 'B', 15);
   pLine(p, PL, y - 6, PR, y - 6, 0.5, RULE);
   return y - 6 - 16;
 }
@@ -261,10 +276,9 @@ function statBoxes(fl, cells) {
   const p = fl.p, w = PTW / cells.length, h = 40, top = fl.y;
   cells.forEach((c, i) => {
     const x = PL + i * w;
-    if (c.fill) pFill(p, x, top - h, w, h, c.fill);
-    pRect(p, x, top - h, w, h, 0.6, FRAME);
-    pTextC(p, x + w / 2, top - 13, c.label, 'B', 6.8, GREY);
-    pTextC(p, x + w / 2, top - 32, c.value, 'B', c.value.length > 7 ? 11 : 15, c.color || 0);
+    pRect(p, x, top - h, w, h, 0.6, RULE);
+    pTextC(p, x + w / 2, top - 13, c.label, 'B', 7);
+    pTextC(p, x + w / 2, top - 32, c.value, 'R', c.value.length > 7 ? 12 : 15);
   });
   fl.y -= h;
 }
@@ -284,7 +298,7 @@ function formField(p, x, y, label, value, endX, opts) {
 // Images must already be added to the document (img = doc.addJpeg(...)).
 function unitReport(doc, lh, u) {
   const right = 'FLOOR ' + u.floor + ' · UNIT ' + u.unit, st = u.stats;
-  const fl = new Flow(doc, lh, right, 'Plumbing Rough-In QA/QC  ·  Floor ' + u.floor + ', Unit ' + u.unit);
+  const fl = new Flow(doc, lh, right, 'Floor ' + u.floor + ', Unit ' + u.unit);
   fl.page();
   const first = doc.pages.length - 1;
   let p = fl.p;
@@ -295,75 +309,70 @@ function unitReport(doc, lh, u) {
   y -= 26;
   formField(p, PL, y, 'Floor:', String(u.floor), PL + 120);
   formField(p, PL + 140, y, 'Unit:', String(u.unit), PL + 250);
-  formField(p, PL + 270, y, 'Result:', RESULT_TEXT[st.result], PR, { font: 'B', color: RESULT_COLOR[st.result] });
+  formField(p, PL + 270, y, 'Result:', RESULT_TEXT[st.result], PR, { font: 'B' });
   y -= 26;
   formField(p, PL, y, 'Inspected on:', u.inspectedOn, PL + 230);
   formField(p, PL + 250, y, 'Inspected by:', u.inspectedBy, PR);
   fl.y = y - 22;
-  statBoxes(fl, [
-    { label: 'ANSWERED', value: st.answered + ' / ' + st.total, color: st.answered >= st.total && st.total ? GREEN : 0 },
-    { label: 'OK', value: String(st.ok), color: st.ok ? GREEN : LIGHT },
-    { label: 'N/A', value: String(st.na), color: st.na ? GREY : LIGHT },
-    { label: 'ERRORS', value: String(st.defs), color: st.defs ? RED : LIGHT },
-    { label: 'OPEN', value: String(st.open), color: st.open ? AMBER : LIGHT, fill: st.open ? WARN_FILL : null },
-    { label: 'OVERDUE', value: String(st.overdue), color: st.overdue ? RED : LIGHT, fill: st.overdue ? DEF_FILL : null },
-    { label: 'CLOSED', value: String(st.closed), color: st.closed ? GREEN : LIGHT }
-  ]);
+  y = fl.y + 22 - 26;
+  formField(p, PL, y, 'Answered:', st.answered + ' of ' + st.total, PL + 150);
+  formField(p, PL + 168, y, 'Errors:', String(st.defs), PL + 290);
+  formField(p, PL + 308, y, 'Open:', st.open + (st.overdue ? ' (' + st.overdue + ' overdue)' : ''), PL + 400);
+  formField(p, PL + 418, y, 'Closed:', String(st.closed), PR);
+  fl.y = y - 8;
   fl.y -= 22;
 
   // the checklist
-  const cN = PL, wN = 24, cQ = PL + 24, wQ = PTW - 24 - 3 * 26 - 60, cA = cQ + wQ, wA = 26, cR = cA + 3 * wA, wR = 60;
-  const BOX = 8.5, LEAD = 11.2, FS = 9.5;
+  const cN = PL + 4, wN = 26, cQ = PL + 30, wQ = PTW - 30 - 3 * 28 - 66, cA = cQ + wQ, wA = 28, cR = cA + 3 * wA, wR = 66;
+  const BOX = 9, LEAD = 12.4, FS = 10.5;
   const tableHead = () => {
     const pp = fl.p, h = 16, top = fl.y;
-    pFill(pp, PL, top - h, PTW, h, NAVY);
-    pTextC(pp, cN + wN / 2, top - 11, '#', 'B', 7.5, 1);
-    pText(pp, cQ + 4, top - 11, 'INSPECTION ITEM', 'B', 7.5, 1);
-    ['Y', 'N', 'N/A'].forEach((t, i) => pTextC(pp, cA + i * wA + wA / 2, top - 11, t, 'B', 7.5, 1));
-    pTextC(pp, cR + wR / 2, top - 11, 'RESULT', 'B', 7.5, 1);
+    ['Y', 'N', 'N/A'].forEach((t, i) => pTextC(pp, cA + i * wA + wA / 2, top - 11, t, 'B', 10));
+    pTextC(pp, cR + wR / 2, top - 11, 'Result', 'B', 10);
     fl.y -= h;
   };
-  let curSec = null;
-  const secRow = (sec, cont) => {
-    const pp = fl.p, h = 16, top = fl.y;
-    pFill(pp, PL, top - h, PTW, h, SEC_FILL);
-    pText(pp, PL + 5, top - 11.2, fitText(sec.name.toUpperCase() + (cont ? '  (continued)' : ''), 'B', 8.8, PTW - 120), 'B', 8.8, NAVY);
-    const n = sec.items.filter(i => i.answer).length;
-    pTextR(pp, PR - 5, top - 11.2, n + ' of ' + sec.items.length + ' answered', 'R', 8, GREY);
-    pLine(pp, PL, top - h, PR, top - h, 0.4, HAIR);
-    fl.y -= h;
+  // Option 4: each section in its own box; a section that runs onto the next page closes its box and starts a new one there
+  let curSec = null, boxTop = 0;
+  const closeBox = () => { if (curSec) pRect(fl.p, PL, fl.y - 4, PTW, boxTop - (fl.y - 4), 0.8, RULE); };
+  const secTitle = (sec, cont) => {
+    const pp = fl.p, top = fl.y;
+    boxTop = top;
+    pText(pp, PL + 8, top - 15, fitText(sec.name + (cont ? '  (continued)' : ''), 'B', 11.5, PTW - 20), 'B', 11.5);
+    pLine(pp, PL, top - 21, PR, top - 21, 0.5, RULE);
+    fl.y -= 23;
   };
-  const rowH = it => Math.max(17, it.lines.length * LEAD + 6);
+  const rowH = it => Math.max(19, it.lines.length * LEAD + 7);
   heading(fl, 'INSPECTION CHECKLIST', st.total + ' items in ' + u.sections.length + ' sections');
   tableHead();
-  fl.cont = () => { heading(fl, 'INSPECTION CHECKLIST (continued)'); tableHead(); if (curSec) secRow(curSec, true); };
-  u.sections.forEach(sec => {
-    sec.items.forEach(it => { it.lines = wrapText(it.question, 'R', FS, wQ - 8); });
+  fl.cont = () => { heading(fl, 'INSPECTION CHECKLIST (continued)'); tableHead(); if (curSec) secTitle(curSec, true); };
+  u.sections.forEach((sec, si) => {
+    sec.items.forEach(it => { it.lines = wrapText(it.question, 'R', FS, wQ - 10); });
     curSec = null;
-    fl.ensure(16 + rowH(sec.items[0]));
-    secRow(sec, false);
+    if (si) fl.y -= 8;
+    fl.ensure(23 + sec.items.slice(0, 3).reduce((t, it) => t + rowH(it), 0) + 8);      // start a section with at least three of its items on the page
     curSec = sec;
-    sec.items.forEach(it => {
+    secTitle(sec, false);
+    sec.items.forEach((it, k) => {
       const h = rowH(it);
-      fl.ensure(h);
-      const pp = fl.p, top = fl.y;
-      if (it.res === 'def') pFill(pp, PL, top - h, PTW, h, DEF_FILL);
-      pTextR(pp, cN + wN - 3, top - 11.5, it.n + '.', 'R', 8.5, GREY);
-      it.lines.forEach((ln, j) => pText(pp, cQ + 4, top - 11.5 - j * LEAD, ln, 'R', FS));
+      if (fl.y - h - 4 < BOTTOM) { closeBox(); fl.page(); }
+      const pp = fl.p, top = fl.y, base = top - 13;
+      pTextR(pp, cN + wN - 4, base, it.n + '.', 'R', FS);
+      it.lines.forEach((ln, j) => pText(pp, cQ + 2, base - j * LEAD, ln, 'R', FS));
       ['Y', 'N', 'NA'].forEach((a, i) => {
-        const bx = cA + i * wA + (wA - BOX) / 2, by = top - 5.5 - BOX;
-        if (it.answer === a) {
-          pFill(pp, bx, by, BOX, BOX, it.res === 'def' ? RED : it.res === 'ok' ? GREEN : GREY);
-          pCross(pp, bx, by, BOX, 1.1, 1);
-        } else pRect(pp, bx, by, BOX, BOX, 0.6, FRAME);
+        const bx = cA + i * wA + (wA - BOX) / 2, by = top - 5.4 - BOX;
+        pRect(pp, bx, by, BOX, BOX, 0.6, 0.25);
+        if (it.answer === a) pFillPen(pp, bx, by, BOX, it.n * 3 + i);
       });
-      if (it.res === 'def') pTextC(pp, cR + wR / 2, top - 11.5, 'ERROR', 'B', 7.6, RED);
-      else if (it.res === 'ok') pTextC(pp, cR + wR / 2, top - 11.5, 'OK', 'B', 8.5, GREEN);
-      else if (it.res === 'na') pTextC(pp, cR + wR / 2, top - 11.5, 'N/A', 'R', 8.5, GREY);
-      else pTextC(pp, cR + wR / 2, top - 11.5, '—', 'R', 8.5, LIGHT);
-      pLine(pp, PL, top - h, PR, top - h, 0.35, HAIR);
+      if (it.res === 'def') pTextC(pp, cR + wR / 2, base, 'ERROR', 'B', 9);
+      else if (it.res === 'ok') pTextC(pp, cR + wR / 2, base, 'OK', 'R', 10);
+      else if (it.res === 'na') pTextC(pp, cR + wR / 2, base, 'N/A', 'R', 10, GREY);
+      else pTextC(pp, cR + wR / 2, base, '—', 'R', 10, LIGHT);
       fl.y -= h;
+      const lastOnPage = k < sec.items.length - 1 && fl.y - rowH(sec.items[k + 1]) - 4 < BOTTOM;
+      if (k < sec.items.length - 1 && !lastOnPage) pLine(pp, PL + 8, fl.y, PR - 8, fl.y, 0.3, 0.78);
     });
+    closeBox();
+    fl.y -= 4;
   });
   fl.cont = null; curSec = null;
   fl.y -= 22;
@@ -389,9 +398,9 @@ function unitReport(doc, lh, u) {
       else fl.ensure(need);
       let pp = fl.p, top = fl.y;
       // header strip
-      pFill(pp, PL, top - 18, PTW, 18, STATUS_FILL[d.st]);
-      pText(pp, PL + 6, top - 12.5, fitText(d.ref + '   ·   ' + d.section, 'B', 10, PTW - 90), 'B', 10);
-      pTextR(pp, PR - 6, top - 12.5, STATUS_TEXT[d.st], 'B', 9, STATUS_COLOR[d.st]);
+      pText(pp, PL, top - 12.5, fitText(d.ref + '   ·   ' + d.section, 'B', 11, PTW - 90), 'B', 11);
+      pTextR(pp, PR, top - 12.5, STATUS_TEXT[d.st], 'B', 9.5);
+      pLine(pp, PL, top - 18, PR, top - 18, 0.5, RULE);
       fl.y -= 18 + 4;
       qLines.forEach((ln, j) => pText(pp, PL + 6, fl.y - 10 - j * 13, ln, 'I', 10.5));
       fl.y -= qLines.length * 13 + 8;
@@ -399,7 +408,7 @@ function unitReport(doc, lh, u) {
       longs.forEach(([label, lines]) => {
         lines.forEach((ln, j) => {
           if (fl.ensure(VL + 2)) pp = fl.p;
-          if (j === 0) pText(pp, PL + 6, fl.y - 9, label, 'B', 9.5, GREY);
+          if (j === 0) pText(pp, PL + 6, fl.y - 9, label, 'B', 9.5);
           pText(pp, PL + 6 + LW, fl.y - 9, ln, 'R', 10, ln === '—' ? LIGHT : 0);
           fl.y -= VL;
         });
@@ -411,7 +420,7 @@ function unitReport(doc, lh, u) {
         if (fl.ensure(VL + 2)) pp = fl.p;
         [shorts[k], shorts[k + 1]].forEach(([label, v], c) => {
           const x = PL + 6 + c * (PTW / 2);
-          pText(pp, x, fl.y - 9, label, 'B', 9.5, GREY);
+          pText(pp, x, fl.y - 9, label, 'B', 9.5);
           pText(pp, x + (c ? 80 : LW), fl.y - 9, fitText(v || '—', 'R', 10, PTW / 2 - (c ? 80 : LW) - 12), 'R', 10, v ? 0 : LIGHT);
         });
         fl.y -= VL;
@@ -507,15 +516,15 @@ async function buildFloorPdf(f, letterheadJpeg, title, loadUnit) {
   const doc = new PdfDoc(title);
   const lh = doc.addJpeg(letterheadJpeg);
   const right = 'FLOOR ' + f.floor, n = f.units.length;
-  const fl = new Flow(doc, lh, right, 'Plumbing Rough-In QA/QC  ·  Floor ' + f.floor);
+  const fl = new Flow(doc, lh, right, 'Floor ' + f.floor);
 
   // cover
   fl.p = doc.page(); fl.p.foot = fl.foot;
   doc.bookmark('Cover', 0);
   let p = fl.p, y = letterhead(p, lh);
-  y -= 74; pTextC(p, PW / 2, y, 'PLUMBING ROUGH-IN', 'B', 26);
+  y -= 74; pTextC(p, PW / 2, y, 'FLOOR ' + f.floor, 'B', 26);
   y -= 28; pTextC(p, PW / 2, y, 'QA/QC Inspection Report', 'R', 16);
-  y -= 22; pTextC(p, PW / 2, y, 'Floor ' + f.floor + '  ·  Units 1 through ' + n, 'R', 13);
+  y -= 22; pTextC(p, PW / 2, y, 'Units 1 through ' + n, 'R', 13);
   y -= 44;
   formField(p, PL, y, 'Project / Location:', f.project, PR);
   y -= 26;
@@ -528,7 +537,7 @@ async function buildFloorPdf(f, letterheadJpeg, title, loadUnit) {
     { label: 'FAILED', value: String(s.fail), color: s.fail ? RED : LIGHT },
     { label: 'IN PROGRESS', value: String(s.prog), color: s.prog ? NAVY : LIGHT },
     { label: 'NOT STARTED', value: String(s.none), color: s.none ? GREY : LIGHT },
-    { label: 'ERRORS', value: String(s.defs), color: s.defs ? RED : LIGHT },
+    { label: 'ERRORS', value: String(s.defs) },
     { label: 'OPEN', value: String(s.open), color: s.open ? AMBER : LIGHT, fill: s.open ? WARN_FILL : null },
     { label: 'OVERDUE', value: String(s.overdue), color: s.overdue ? RED : LIGHT, fill: s.overdue ? DEF_FILL : null },
     { label: 'SIGNED OFF', value: s.signed + ' / ' + n, color: s.signed ? GREEN : LIGHT }
@@ -536,7 +545,7 @@ async function buildFloorPdf(f, letterheadJpeg, title, loadUnit) {
   fl.y -= 24;
 
   // every unit, with its page number (filled in once the units are laid out)
-  const cols = [['UNIT', 38, 'c'], ['INSPECTED ON', 76, 'l'], ['INSPECTED BY', 112, 'l'], ['ANSWERED', 60, 'c'], ['OPEN', 40, 'c'], ['RESULT', 70, 'c'], ['SIGNED', 52, 'c'], ['PAGE', 56, 'r']];
+  const cols = [['Unit', 38, 'c'], ['Inspected on', 76, 'l'], ['Inspected by', 112, 'l'], ['Answered', 60, 'c'], ['Open', 40, 'c'], ['Result', 70, 'c'], ['Signed', 52, 'c'], ['Page', 56, 'r']];
   const colX = []; let cx = PL; cols.forEach(c => { colX.push(cx); cx += c[1]; });
   const cell = (pp, i, yy, text, font, size, color) => {
     const [, w, al] = cols[i], x = colX[i];
@@ -544,9 +553,10 @@ async function buildFloorPdf(f, letterheadJpeg, title, loadUnit) {
     if (al === 'c') pTextC(pp, x + w / 2, yy, t, font, size, color); else if (al === 'r') pTextR(pp, x + w - 4, yy, t, font, size, color); else pText(pp, x + 4, yy, t, font, size, color);
   };
   const unitsHead = () => {
-    const pp = fl.p, h = 16, top = fl.y;
-    pFill(pp, PL, top - h, PTW, h, NAVY);
-    cols.forEach((c, i) => cell(pp, i, top - 11, c[0], 'B', 7.3, 1));
+    const pp = fl.p, h = 18, top = fl.y;
+    pLine(pp, PL, top, PR, top, 0.8, RULE);
+    cols.forEach((c, i) => cell(pp, i, top - 12.5, c[0], 'B', 8.5));
+    pLine(pp, PL, top - h, PR, top - h, 0.5, RULE);
     fl.y -= h;
   };
   heading(fl, 'UNITS', f.units.some(u => u.include) ? 'Tap a unit to go to its report' : '');
@@ -557,15 +567,14 @@ async function buildFloorPdf(f, letterheadJpeg, title, loadUnit) {
     const h = 16;
     fl.ensure(h);
     const pp = fl.p, top = fl.y, yy = top - 11.3;
-    if (i % 2) pFill(pp, PL, top - h, PTW, h, 0.975);
-    cell(pp, 0, yy, String(u.unit), 'B', 9.5);
-    cell(pp, 1, yy, u.inspectedOn || '—', 'R', 9, u.inspectedOn ? 0 : LIGHT);
-    cell(pp, 2, yy, u.inspectedBy || '—', 'R', 9, u.inspectedBy ? 0 : LIGHT);
-    cell(pp, 3, yy, u.answered + ' / ' + u.total, 'R', 9, u.answered >= u.total && u.total ? GREEN : 0);
-    cell(pp, 4, yy, String(u.open), u.open ? 'B' : 'R', 9, u.open ? RED : LIGHT);
-    cell(pp, 5, yy, RESULT_TEXT[u.result], 'B', 8, RESULT_COLOR[u.result]);
-    cell(pp, 6, yy, u.signed ? 'Yes' : '—', u.signed ? 'B' : 'R', 9, u.signed ? GREEN : LIGHT);
-    pLine(pp, PL, top - h, PR, top - h, 0.35, HAIR);
+    cell(pp, 0, yy, String(u.unit), 'B', 10);
+    cell(pp, 1, yy, u.inspectedOn || '—', 'R', 9.5, u.inspectedOn ? 0 : LIGHT);
+    cell(pp, 2, yy, u.inspectedBy || '—', 'R', 9.5, u.inspectedBy ? 0 : LIGHT);
+    cell(pp, 3, yy, u.answered + ' / ' + u.total, 'R', 9.5, u.answered ? 0 : LIGHT);
+    cell(pp, 4, yy, String(u.open), u.open ? 'B' : 'R', 9.5, u.open ? 0 : LIGHT);
+    cell(pp, 5, yy, RESULT_TEXT[u.result], u.result === 'none' ? 'R' : 'B', 8.5, u.result === 'none' ? LIGHT : 0);
+    cell(pp, 6, yy, u.signed ? 'Yes' : '—', 'R', 9.5, u.signed ? 0 : LIGHT);
+    pLine(pp, PL, top - h, PR, top - h, 0.3, HAIR);
     pageCells.push({ p: pp, top, yy });
     fl.y -= h;
   });
@@ -575,12 +584,13 @@ async function buildFloorPdf(f, letterheadJpeg, title, loadUnit) {
   fl.page();
   const punchPage = doc.pages.length - 1;
   doc.bookmark('Punch list', punchPage);
-  const pc = [['REF', 46], ['INSPECTION ITEM', 166], ['NOTES / CORRECTIVE ACTION', 150], ['RESPONSIBLE', 62], ['DUE', 42], ['STATUS', 38]];
+  const pc = [['Ref', 46], ['Inspection Item', 166], ['Notes / Corrective Action', 150], ['Responsible', 62], ['Due', 42], ['Status', 38]];
   const px = []; cx = PL; pc.forEach(c => { px.push(cx); cx += c[1]; });
   const punchHead = () => {
-    const pp = fl.p, h = 16, top = fl.y;
-    pFill(pp, PL, top - h, PTW, h, NAVY);
-    pc.forEach((c, i) => pText(pp, px[i] + 4, top - 11, c[0], 'B', 7, 1));
+    const pp = fl.p, h = 18, top = fl.y;
+    pLine(pp, PL, top, PR, top, 0.8, RULE);
+    pc.forEach((c, i) => pText(pp, px[i] + 4, top - 12.5, c[0], 'B', 8.5));
+    pLine(pp, PL, top - h, PR, top - h, 0.5, RULE);
     fl.y -= h;
   };
   const nOpen = f.defs.filter(d => d.st !== 'closed').length, nOver = f.defs.filter(d => d.st === 'overdue').length;
@@ -600,14 +610,13 @@ async function buildFloorPdf(f, letterheadJpeg, title, loadUnit) {
       const h = Math.max(item.length, note.length, resp.length) * LD + 7;
       fl.ensure(h);
       const pp = fl.p, top = fl.y;
-      if (d.st === 'overdue') pFill(pp, PL, top - h, PTW, h, DEF_FILL);
       const yy = top - 10.5;
       pText(pp, px[0] + 4, yy, d.ref, 'B', FS);
       item.forEach((l, j) => pText(pp, px[1] + 4, yy - j * LD, fitText(l.t, l.f, j ? FS : 7.4, pc[1][1] - 8), l.f, j ? FS : 7.4, l.c));
       note.forEach((l, j) => pText(pp, px[2] + 4, yy - j * LD, l.t, l.f, FS, l.c));
       resp.forEach((l, j) => pText(pp, px[3] + 4, yy - j * LD, l, 'R', FS, d.responsible ? 0 : LIGHT));
-      pText(pp, px[4] + 4, yy, d.dueShort || '—', 'R', FS, d.dueShort ? (d.st === 'overdue' ? RED : 0) : LIGHT);
-      pText(pp, px[5] + 4, yy, STATUS_TEXT[d.st], 'B', 6.9, STATUS_COLOR[d.st]);
+      pText(pp, px[4] + 4, yy, d.dueShort || '—', d.st === 'overdue' ? 'B' : 'R', FS, d.dueShort ? 0 : LIGHT);
+      pText(pp, px[5] + 4, yy, STATUS_TEXT[d.st], 'B', 6.9);
       pLine(pp, PL, top - h, PR, top - h, 0.35, HAIR);
       fl.y -= h;
     });
@@ -623,7 +632,7 @@ async function buildFloorPdf(f, letterheadJpeg, title, loadUnit) {
       if (b.tot) pLine(pp, PL, fl.y, PR, fl.y, 0.6, RULE);
       pText(pp, sc[0], yy, fitText(b.name, b.tot ? 'B' : 'R', 10, 300), b.tot ? 'B' : 'R', 10);
       pTextR(pp, sc[1], yy, b.total + ' total', b.tot ? 'B' : 'R', 10, b.total ? 0 : LIGHT);
-      pTextR(pp, sc[2], yy, b.open + ' open', b.open ? 'B' : 'R', 10, b.open ? RED : LIGHT);
+      pTextR(pp, sc[2], yy, b.open + ' open', b.open ? 'B' : 'R', 10, b.open ? 0 : LIGHT);
       if (!b.tot) pLine(pp, PL, fl.y - 15, PR, fl.y - 15, 0.3, HAIR);
       fl.y -= 15;
     });
@@ -637,7 +646,7 @@ async function buildFloorPdf(f, letterheadJpeg, title, loadUnit) {
     const start = unitReport(doc, lh, withImages(doc, u));
     doc.bookmark('Unit ' + f.units[i].unit, start);
     const num = String(start + 1);
-    pTextR(c.p, PR - 4, c.yy, num, 'R', 9.5, NAVY);
+    pTextR(c.p, PR - 4, c.yy, num, 'R', 9.5);
     pDots(c.p, colX[7] + 4, PR - 8 - textWidth(num, 'R', 9.5), c.yy + 1.5, DOTS);
     c.p.links.push({ rect: [PL, c.top - 16, PR, c.top], page: start });
   }
