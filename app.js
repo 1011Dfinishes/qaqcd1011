@@ -93,7 +93,7 @@ function QL() {
   all.filter(q => !q.removed).sort(byPos).forEach(q => {
     let s = byName[q.section];
     if (!s) { s = byName[q.section] = { name: q.section, i: secs.length, items: [] }; secs.push(s); }
-    s.items.push({ id: q.id, n: 0, section: q.section, question: q.question, pa: q.problem_answer, position: q.position, sec: s });
+    s.items.push({ id: q.id, n: 0, section: q.section, question: q.question, pa: q.problem_answer, position: q.position, proof: !!q.proof, sec: s });
   });
   let n = 0;
   secs.forEach(s => s.items.forEach(it => { it.n = ++n; list.push(it); byId[it.id] = it; }));
@@ -225,7 +225,7 @@ function bump() { S.rev++; }
 function sameFields(a, b, keys) { return keys.every(k => a[k] === b[k]); }
 const A_KEYS = ['answer', 'notes', 'corrective_action', 'responsible', 'due_date', 'corrected_on', 'verified_by'];
 const U_KEYS = ['inspected_on', 'inspected_by', 'comments'];
-const Q_KEYS = ['section', 'question', 'problem_answer', 'position', 'removed'];
+const Q_KEYS = ['section', 'question', 'problem_answer', 'position', 'removed', 'proof'];
 function putAnswer(r) {
   const k = akey(r.floor, r.unit, r.question_id), t = tsMs(r.updated_at), old = S.ans[k];
   if (old && old.t > t) return -1;
@@ -246,7 +246,7 @@ function putUnit(r) {
 function putQuestion(r) {
   const t = tsMs(r.updated_at), old = S.q[r.id];
   if (old && old.t > t) return -1;
-  const row = { id: r.id, section: r.section, question: r.question, problem_answer: r.problem_answer, position: +r.position, removed: !!r.removed_at, t, s: S.seq + 1 };
+  const row = { id: r.id, section: r.section, question: r.question, problem_answer: r.problem_answer, position: +r.position, removed: !!r.removed_at, proof: !!r.proof_photos, t, s: S.seq + 1 };
   if (old && old.t === t && sameFields(old, row, Q_KEYS)) return 0;
   S.q[r.id] = row;
   return 1;
@@ -306,7 +306,7 @@ function applySnapshot(s, seq0) {
   Object.keys(S.photos).forEach(k => { if (!photos[k] && S.photos[k].s > seq0) photos[k] = S.photos[k]; });
   (s.questions || []).forEach(r => {
     if (S.dead['q|' + r.id] > seq0) return;
-    const row = { id: r.id, section: r.section, question: r.question, problem_answer: r.problem_answer, position: +r.position, removed: !!r.removed, t: r.t || 0, s: 0 }, old = S.q[r.id];
+    const row = { id: r.id, section: r.section, question: r.question, problem_answer: r.problem_answer, position: +r.position, removed: !!r.removed, proof: !!r.proof, t: r.t || 0, s: 0 }, old = S.q[r.id];
     q[r.id] = old && old.t > row.t ? old : row;
   });
   (s.answers || []).forEach(a => {
@@ -344,7 +344,7 @@ function applySnapshot(s, seq0) {
 function exportSnapshot() {
   return {
     project: { project_location: S.project.project_location, t: S.project.t },
-    questions: Object.keys(S.q).map(k => { const q = S.q[k]; return { id: q.id, section: q.section, question: q.question, problem_answer: q.problem_answer, position: q.position, removed: q.removed, t: q.t }; }),
+    questions: Object.keys(S.q).map(k => { const q = S.q[k]; return { id: q.id, section: q.section, question: q.question, problem_answer: q.problem_answer, position: q.position, removed: q.removed, proof: !!q.proof, t: q.t }; }),
     answers: Object.keys(S.ans).map(k => { const a = S.ans[k]; return hasDetails(a) ? [a.floor, a.unit, a.question_id, a.answer, a.t, a.notes, a.corrective_action, a.responsible, a.due_date, a.corrected_on, a.verified_by] : [a.floor, a.unit, a.question_id, a.answer, a.t]; }),
     units: Object.keys(S.units).map(k => { const u = S.units[k]; return [u.floor, u.unit, u.inspected_on, u.inspected_by, u.comments, u.t]; }),
     photos: Object.keys(S.photos).map(k => { const p = S.photos[k]; return [p.id, p.floor, p.unit, p.question_id, p.path, p.taken, p.t]; }),
@@ -657,6 +657,15 @@ function defBlock(f, u, q, r) {
   return h + '</' + tag + '>';
 }
 
+// photos that show an OK item was done right (for questions with "Proof photos" turned on, like the shower body measurements)
+function proofBlock(f, u, q) {
+  const n = photosOf(f, u, q.id).length, ed = S.editor;
+  if (!ed && !n) return '';
+  const tag = ed ? 'button' : 'div';
+  return '<' + tag + (ed ? ' type="button" data-det="' + q.id + '"' : '') + ' class="df pf"><span class="dh"><b>Proof photos</b>' + (n ? '<span class="pfn">' + n + '</span>' : '') +
+    (ed ? '<span class="dl">' + (n ? 'Edit photos' : 'Add photos') + ' ›</span>' : '') + '</span>' + photoStrip(f, u, q.id) + '</' + tag + '>';
+}
+
 function defDetails(r) {
   let h = '';
   if (r.notes) h += '<span class="dn">' + esc(r.notes) + '</span>';
@@ -679,6 +688,7 @@ function rowHtml(f, u, q) {
   });
   h += '</div>';
   if (res === 'def') h += defBlock(f, u, q, r);
+  else if (res === 'ok' && q.proof) h += proofBlock(f, u, q);
   return h + '</div>';
 }
 
@@ -754,6 +764,13 @@ VIEWS.detail = r => {
   const isDef = !!q && resultOf(row.answer, q.pa) === 'def';
   const back = S.detailBack === '#/f/' + f + '/punch' ? [S.detailBack, 'Punch list'] : ['#/f/' + f + '/u/' + u + '/q/' + r.q, 'Unit ' + u];
   let h = '<div class="srow"><a class="bk" href="' + back[0] + '">' + BACK + back[1] + '</a><span id="dStatus">' + (isDef ? defPill(defStatus(row)) : '') + '</span></div>' + pendingNote();
+  if (!isDef && q && q.proof && resultOf(row.answer, q.pa) === 'ok') {
+    return h + '<div class="qsec">' + esc(q.section) + ' · Item ' + q.n + '</div><div class="qq">' + esc(q.question) + '</div>' +
+      '<div class="mt">Floor ' + f + ' · Unit ' + u + ' · Answer: ' + (row.answer === 'Y' ? 'Yes' : 'No') + ' · OK</div>' +
+      '<div class="lab">Proof photos</div><div class="fnote" style="margin:-2px 0 10px">Photos that show it was done right, for example the tape measure on the shower body.</div>' +
+      '<div class="pgrid" id="phBox">' + photoTiles(f, u, r.q) + '</div>' +
+      '<div class="actions"><a class="btn" href="' + back[0] + '">Done</a></div>';
+  }
   if (!isDef) return h + '<div class="empty">This item isn’t marked as an error any more.</div>';
   h += '<div class="qsec">' + esc(q.section) + ' · Item ' + q.n + '</div><div class="qq">' + esc(q.question) + '</div>' +
     '<div class="mt">Floor ' + f + ' · Unit ' + u + ' · Answer: ' + (row.answer === 'Y' ? 'Yes' : 'No') + '</div>';
@@ -810,14 +827,14 @@ function photosOf(f, u, qid) {
 function photoStrip(f, u, qid) {
   const list = photosOf(f, u, qid);
   if (!list.length) return '';
-  return '<span class="dp">' + list.slice(0, 4).map(p => '<img crossorigin="anonymous" src="' + esc(p.src) + '" alt="Photo of the problem" loading="lazy"' + (p.pending ? '' : ' data-ph="' + esc(p.id) + '" data-full="' + esc(p.full) + '"') + '>').join('') +
+  return '<span class="dp">' + list.slice(0, 4).map(p => '<img crossorigin="anonymous" src="' + esc(p.src) + '" alt="Photo" loading="lazy"' + (p.pending ? '' : ' data-ph="' + esc(p.id) + '" data-full="' + esc(p.full) + '"') + '>').join('') +
     (list.length > 4 ? '<span class="dpm">+' + (list.length - 4) + '</span>' : '') + '</span>';
 }
 
 // the tiles on the details page
 function photoTiles(f, u, qid) {
   const list = photosOf(f, u, qid);
-  let h = list.map(p => '<button type="button" class="ptile" data-act="viewph" data-id="' + esc(p.id) + '"><img crossorigin="anonymous" src="' + esc(p.src) + '" alt="Photo of the problem"' + (p.full ? ' data-full="' + esc(p.full) + '"' : '') + '>' +
+  let h = list.map(p => '<button type="button" class="ptile" data-act="viewph" data-id="' + esc(p.id) + '"><img crossorigin="anonymous" src="' + esc(p.src) + '" alt="Photo"' + (p.full ? ' data-full="' + esc(p.full) + '"' : '') + '>' +
     (p.pending ? '<span class="badge">' + (p.pending === 'queued' ? 'Waiting for signal' : 'Uploading…') + '</span>' : '') + '</button>').join('');
   if (list.length < PHOTO_MAX) h += '<button type="button" class="ptile add" data-act="addph">' + CAM_SVG + '<span>Add photo</span></button>';
   return h;
@@ -837,7 +854,7 @@ function viewPhoto(id) {
   const p = S.photos[id];
   if (!p) return;
   const q = QL().byId[p.question_id];
-  openSheet('<div class="pv-wrap"><img crossorigin="anonymous" src="' + esc(sb.publicUrl(p.path)) + '" alt="Photo of the problem"></div>' +
+  openSheet('<div class="pv-wrap"><img crossorigin="anonymous" src="' + esc(sb.publicUrl(p.path)) + '" alt="Photo"></div>' +
     '<div class="pv-meta">Floor ' + p.floor + ' · Unit ' + p.unit + (q ? ' · Item ' + q.n : '') + (p.taken ? '<br>taken ' + esc(fmtStamp(new Date(p.taken))) : '') + '</div>' +
     (S.editor ? '<button type="button" class="sh-btn danger" id="phDel">Delete photo</button>' : '') + '<button type="button" class="sh-btn cancel" id="phCls">Close</button>', (el, close) => {
     $('#phCls', el).onclick = close;
@@ -878,7 +895,7 @@ async function pendingPhoto(id) {
 }
 
 async function addPhoto(r) {
-  const how = await choose('Add a photo of the problem', [{ label: 'Take Photo', value: 'cam' }, { label: 'Choose from Photos', value: 'lib' }]);
+  const how = await choose('Add a photo', [{ label: 'Take Photo', value: 'cam' }, { label: 'Choose from Photos', value: 'lib' }]);
   if (!how) return;
   const inp = $(how === 'cam' ? '#camIn' : '#libIn');
   inp.value = '';
@@ -963,7 +980,7 @@ function askDate(fallback) {
 
 async function handleFiles(f, u, qid, files, how) {
   const room = PHOTO_MAX - photosOf(f, u, qid).length;
-  if (files.length > room) { files = files.slice(0, Math.max(0, room)); toast('A problem can have up to ' + PHOTO_MAX + ' photos.', 3600); }
+  if (files.length > room) { files = files.slice(0, Math.max(0, room)); toast('An item can have up to ' + PHOTO_MAX + ' photos.', 3600); }
   for (const file of files) {
     let date = null;
     try { date = parseExifDate(await file.slice(0, 256 * 1024).arrayBuffer()); } catch (e) { date = null; }
@@ -1271,17 +1288,25 @@ async function unitReportData(f, u, waiting, onPhoto) {
     if (res === 'ok') ok++; else if (res === 'na') na++;
     return { n: q.n, question: q.question, answer: a, res };
   }) }));
-  const defs = [];
-  for (const q of ql.list) {
-    const r = ansRow(f, u, q.id);
-    if (!r || resultOf(r.answer, q.pa) !== 'def') continue;
-    const photos = [], list = photosOf(f, u, q.id);
+  const pdfPhotos = async qid => {
+    const photos = [], list = photosOf(f, u, qid);
     for (let k = 0; k < list.length; k++) {
       const p = list[k], saved = S.photos[p.id], taken = saved ? saved.taken : null;
       const label = 'Photo ' + (k + 1) + (taken ? ' · ' + fmtWhen(taken) : p.pending ? ' · not uploaded yet' : '');
       try { photos.push(Object.assign({ label }, await pdfPhoto(p, waiting))); } catch (e) { photos.push({ label, jpeg: null }); }
       if (onPhoto) onPhoto();
     }
+    return photos;
+  };
+  const defs = [], proofs = [];
+  for (const q of ql.list) {
+    const r = ansRow(f, u, q.id), res = r ? resultOf(r.answer, q.pa) : '';
+    if (res === 'ok' && q.proof && photosOf(f, u, q.id).length) {
+      proofs.push({ ref: 'U' + two(u) + '-' + two(q.n), section: q.section, question: q.question, answer: r.answer === 'Y' ? 'Yes' : 'No', photos: await pdfPhotos(q.id) });
+      continue;
+    }
+    if (res !== 'def') continue;
+    const photos = await pdfPhotos(q.id);
     defs.push({ ref: 'U' + two(u) + '-' + two(q.n), section: q.section, question: q.question, st: defStatus(r, day), notes: r.notes, corrective: r.corrective_action,
       responsible: r.responsible, due: fmtISODay(r.due_date), corrected: fmtISODay(r.corrected_on), verified: r.verified_by, photos });
   }
@@ -1294,12 +1319,12 @@ async function unitReportData(f, u, waiting, onPhoto) {
     sigs[role] = { name: s.print_name, date: fmtISODay(s.signed_on), jpeg: j.jpeg || null, w: j.w, h: j.h };
   }
   return { floor: f, unit: u, project: S.project.project_location, inspectedOn: fmtISODay(ur.inspected_on), inspectedBy: ur.inspected_by, comments: ur.comments,
-    stats: Object.assign({ ok, na }, st), sections, defs, sigs };
+    stats: Object.assign({ ok, na }, st), sections, defs, proofs, sigs };
 }
 
 function photoCount(f, u) {
   let n = 0;
-  QL().list.forEach(q => { const r = ansRow(f, u, q.id); if (r && resultOf(r.answer, q.pa) === 'def') n += photosOf(f, u, q.id).length; });
+  QL().list.forEach(q => { const r = ansRow(f, u, q.id), res = r ? resultOf(r.answer, q.pa) : ''; if (res === 'def' || (res === 'ok' && q.proof)) n += photosOf(f, u, q.id).length; });
   return n;
 }
 
@@ -1419,7 +1444,7 @@ VIEWS.questions = () => {
         '<button type="button" class="mini" data-act="rensave">Save</button><button type="button" class="mini" data-act="rencancel">Cancel</button></div>';
     } else h += '<div class="sec2">' + esc(sec.name) + '<button type="button" class="link" data-act="ren" data-s="' + sec.i + '">Rename</button></div>';
     sec.items.forEach(q => {
-      h += '<button type="button" class="qm" id="qm' + q.id + '" data-act="editq" data-id="' + q.id + '"><span class="qn">' + q.n + '.</span><span class="qt">' + esc(q.question) + '</span>' + paChip(q.pa) + '</button>';
+      h += '<button type="button" class="qm" id="qm' + q.id + '" data-act="editq" data-id="' + q.id + '"><span class="qn">' + q.n + '.</span><span class="qt">' + esc(q.question) + (q.proof ? '<span class="pfq">Proof photos</span>' : '') + '</span>' + paChip(q.pa) + '</button>';
     });
     h += '<button type="button" class="addq" data-act="addq" data-s="' + sec.i + '">+ Add a question to this section</button>';
   });
@@ -1440,10 +1465,10 @@ function ensureDraft(r) {
   const ql = QL();
   if (r.view === 'qedit') {
     const q = S.q[r.id];
-    S.draft = q && !q.removed ? { h: location.hash, id: q.id, question: q.question, section: q.section, newSection: '', pa: q.problem_answer } : null;
+    S.draft = q && !q.removed ? { h: location.hash, id: q.id, question: q.question, section: q.section, newSection: '', pa: q.problem_answer, proof: !!q.proof } : null;
   } else {
     const sec = S.newSec != null && ql.secs[S.newSec] ? ql.secs[S.newSec].name : ql.secs.length ? ql.secs[0].name : NEW_SECTION;
-    S.draft = { h: location.hash, id: null, question: '', section: sec, newSection: '', pa: 'N' };
+    S.draft = { h: location.hash, id: null, question: '', section: sec, newSection: '', pa: 'N', proof: false };
   }
   return S.draft;
 }
@@ -1463,6 +1488,7 @@ function qform(r) {
     ['Y', 'Yes', 'A “Yes” answer is flagged. For questions that ask about a problem, like “…obstructed?”'],
     ['None', 'Neither', 'Information only. No answer is ever flagged.']
   ].map(o => '<button type="button" class="opt' + (d.pa === o[0] ? ' on' : '') + '" data-act="opt" data-v="' + o[0] + '" aria-pressed="' + (d.pa === o[0]) + '"><i></i><span><b>' + o[1] + '</b>' + o[2] + '</span></button>').join('');
+  h += '<div class="lab">Photos</div><button type="button" class="opt chk' + (d.proof ? ' on' : '') + '" data-act="proof" aria-pressed="' + !!d.proof + '"><i></i><span><b>Proof photos</b>Let inspectors add photos even when the answer is OK, to show it was done right (like the shower body measurements). Photos can always be added to an error.</span></button>';
   h += '<div class="ferr" id="qfErr"></div><div class="actions" style="margin-top:4px"><button type="button" class="btn" data-act="saveq">' + (isNew ? 'Add question' : 'Save changes') + '</button>';
   if (!isNew) {
     const i = it.sec.items.indexOf(it);
@@ -1529,7 +1555,7 @@ async function saveQuestion() {
   formError('');
   let id = d.id;
   if (id == null) {
-    const rows = await questionChange('Adding…', async () => mustChange(await sb.insert('roughin_questions', [{ section, question: text, problem_answer: d.pa, position: positionIn(section) }])));
+    const rows = await questionChange('Adding…', async () => mustChange(await sb.insert('roughin_questions', [{ section, question: text, problem_answer: d.pa, position: positionIn(section), proof_photos: !!d.proof }])));
     if (!rows) return;
     takeQuestions(rows); id = rows[0].id;
   } else {
@@ -1537,6 +1563,7 @@ async function saveQuestion() {
     if (!q) { formError('This question isn’t on the checklist any more.'); return; }
     if (text !== q.question) patch.question = text;
     if (d.pa !== q.problem_answer) patch.problem_answer = d.pa;
+    if (!!d.proof !== !!q.proof) patch.proof_photos = !!d.proof;
     if (section !== q.section) { patch.section = section; patch.position = positionIn(section); }      // goes to the end of its new section
     if (Object.keys(patch).length) {
       const rows = await questionChange('Saving…', async () => mustChange(await sb.update('roughin_questions', 'id=eq.' + id, patch)));
@@ -1676,7 +1703,8 @@ view.addEventListener('click', e => {
   else if (act === 'rensave') renameSection();
   else if (act === 'putback') putBackQuestion(+b.dataset.id);
   else if (act === 'delq') deleteQuestion(+b.dataset.id);
-  else if (act === 'opt' && S.draft) { S.draft.pa = b.dataset.v; view.querySelectorAll('.opt').forEach(o => { const on = o === b; o.classList.toggle('on', on); o.setAttribute('aria-pressed', on); }); }
+  else if (act === 'proof' && S.draft) { S.draft.proof = !S.draft.proof; b.classList.toggle('on', S.draft.proof); b.setAttribute('aria-pressed', S.draft.proof); }
+  else if (act === 'opt' && S.draft) { S.draft.pa = b.dataset.v; view.querySelectorAll('.opt:not(.chk)').forEach(o => { const on = o === b; o.classList.toggle('on', on); o.setAttribute('aria-pressed', on); }); }
   else if (act === 'saveq') saveQuestion();
   else if (act === 'moveq') moveQuestion(+b.dataset.v);
   else if (act === 'removeq') removeQuestion();

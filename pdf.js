@@ -447,6 +447,46 @@ function unitReport(doc, lh, u) {
     fl.y -= 18;
   }
 
+  // proof photos: OK items photographed to show they were done right (like the shower body measurements)
+  const proofs = (u.proofs || []).filter(d => d.photos.length);
+  if (proofs.length) {
+    const GAP = 10, PER = 3, CW = (PTW - 12 - (PER - 1) * GAP) / PER, MAXH = CW * 0.92;
+    proofs.forEach((d, di) => {
+      const qLines = wrapText(d.question, 'I', 10.5, PTW - 12);
+      const sized = d.photos.map(ph => {
+        const sc = ph.img ? Math.min(CW / ph.w, MAXH / ph.h) : 0;
+        return Object.assign({}, ph, { dw: ph.img ? ph.w * sc : CW, dh: ph.img ? ph.h * sc : CW * 0.75 });
+      });
+      const rowH = k => Math.max.apply(null, sized.slice(k, k + PER).map(r => r.dh)) + 14 + 4;
+      const need = 22 + qLines.length * 13 + 8 + rowH(0);
+      if (di === 0) { fl.ensure(27 + need); heading(fl, 'PROOF PHOTOS', plural2(proofs.length, 'item', 'items') + ' photographed'); fl.cont = () => heading(fl, 'PROOF PHOTOS (continued)'); }
+      else fl.ensure(need);
+      let pp = fl.p;
+      const top = fl.y;
+      pText(pp, PL, top - 12.5, fitText(d.ref + '   ·   ' + d.section, 'B', 11, PTW - 120), 'B', 11);
+      pTextR(pp, PR, top - 12.5, 'Answer: ' + d.answer + '  ·  OK', 'B', 9.5);
+      pLine(pp, PL, top - 18, PR, top - 18, 0.5, RULE);
+      fl.y -= 22;
+      qLines.forEach((ln, j) => pText(pp, PL + 6, fl.y - 10 - j * 13, ln, 'I', 10.5));
+      fl.y -= qLines.length * 13 + 8;
+      for (let k = 0; k < sized.length; k += PER) {
+        const row = sized.slice(k, k + PER), rh = rowH(k) - 4;
+        if (fl.ensure(rh + 4)) pp = fl.p;
+        row.forEach((ph, c) => {
+          const cx = PL + 6 + c * (CW + GAP), x = cx + (CW - ph.dw) / 2, yTop = fl.y - 2;
+          if (ph.img) pImage(pp, ph.img, x, yTop - ph.dh, ph.dw, ph.dh);
+          else { pFill(pp, x, yTop - ph.dh, ph.dw, ph.dh, 0.95); pTextC(pp, cx + CW / 2, yTop - ph.dh / 2 - 3, 'Photo not available', 'I', 8, GREY); }
+          pRect(pp, x, yTop - ph.dh, ph.dw, ph.dh, 0.6, FRAME);
+          pTextC(pp, cx + CW / 2, yTop - ph.dh - 10, fitText(ph.label, 'I', 7.8, CW), 'I', 7.8, GREY);
+        });
+        fl.y -= rh + 4;
+      }
+      fl.y -= di < proofs.length - 1 ? 14 : 4;
+    });
+    fl.cont = null;
+    fl.y -= 18;
+  }
+
   // unit comments
   const cLines = u.comments ? wrapText(u.comments, 'R', 10.5, PTW) : [];
   fl.ensure(27 + Math.min(cLines.length || 1, 4) * 13.5 + 6);
@@ -494,7 +534,7 @@ function drawSignatures(p, y, sigs) {
 
 // adds a unit's images to the document and returns the unit with img fields filled
 function withImages(doc, u) {
-  u.defs.forEach(d => d.photos.forEach(ph => { ph.img = ph.jpeg ? doc.addJpeg(ph.jpeg) : null; ph.jpeg = null; }));
+  u.defs.concat(u.proofs || []).forEach(d => d.photos.forEach(ph => { ph.img = ph.jpeg ? doc.addJpeg(ph.jpeg) : null; ph.jpeg = null; }));
   Object.keys(u.sigs || {}).forEach(r => { const s = u.sigs[r]; s.img = s.jpeg ? doc.addJpeg(s.jpeg) : null; s.jpeg = null; });
   return u;
 }

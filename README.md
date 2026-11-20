@@ -11,6 +11,7 @@ Live QA/QC checklist app for the plumbing rough-in inspections at 1011 1st Ave.
 - A deficiency can carry notes, photos, a corrective action, who is responsible, a due date, the date it was corrected and who verified it. It is **Open**, **Overdue** (due date passed) or **Closed** (has a "Corrected on" date).
 - A unit is **Not started**, **In progress**, **Fail** (any open deficiency) or **Pass** (every question answered, nothing open).
 - Each floor has a punch list of its deficiencies and a count by section.
+- **Proof photos**: a question can be set (in Checklist questions) to take photos even when the answer is OK, to show it was done right. It is on for the shower body measurements (items 60 and 61). These photos appear under the item and in a Proof Photos section of the PDF.
 - **Sign-off**: each unit is signed with a finger by the Donato Representative and the CCM Representative (print name, signature, date), like the Finishes app.
 - **PDF export**: a report for one unit (letterhead, details, totals, the full checklist with Y / N / N/A boxes, every deficiency with its details and photos, comments, signatures), or for a whole floor (cover with every unit and page links, punch list, deficiencies by section, then the report of each unit that has been started).
 - **Editors** sign in and can change everything. **Guests** can see everything and change nothing.
@@ -31,8 +32,8 @@ Live QA/QC checklist app for the plumbing rough-in inspections at 1011 1st Ave.
 
 To change the floors or the number of units, edit the `FLOORS` list at the top of `config.js`.
 
-After changing any file, raise the number in `?v=4` on the four script lines at the bottom of `index.html`
-and in `dq-shell-v4` at the top of `sw.js`, so phones pick up the new version.
+After changing any file, raise the number in `?v=5` on the four script lines at the bottom of `index.html`
+and in `dq-shell-v5` at the top of `sw.js`, so phones pick up the new version.
 
 ## Where the data lives
 
@@ -41,7 +42,7 @@ Nothing here reads or changes the Finishes data.
 
 | In Supabase | Holds |
 | --- | --- |
-| `roughin_questions` | The checklist: section, question, problem answer, order |
+| `roughin_questions` | The checklist: section, question, problem answer, order, proof photos on/off |
 | `roughin_answers` | One row per floor, unit and question: the answer and the deficiency details |
 | `roughin_units` | Inspected on / by and comments for each unit |
 | `roughin_project` | The project address |
