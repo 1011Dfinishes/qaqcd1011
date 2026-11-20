@@ -258,8 +258,9 @@ function putProject(r) {
   S.project = { project_location: loc, t };
   return 1;
 }
-function putPhoto(r) {                          // photos never change once saved
-  if (S.photos[r.id]) return 0;
+function putPhoto(r) {                          // a photo only changes if it is moved to another unit or item
+  const o = S.photos[r.id];
+  if (o && o.floor === r.floor && o.unit === r.unit && o.question_id === r.question_id) return 0;
   S.photos[r.id] = { id: r.id, floor: r.floor, unit: r.unit, question_id: r.question_id, path: r.path, taken: r.taken_at ? tsMs(r.taken_at) : null, t: tsMs(r.created_at), s: S.seq + 1 };
   return 1;
 }
@@ -301,7 +302,9 @@ function applySnapshot(s, seq0) {
   const q = {}, ans = {}, units = {}, photos = {};
   (s.photos || []).forEach(a => {
     if (S.dead['ph|' + a[0]] > seq0) return;
-    photos[a[0]] = S.photos[a[0]] || { id: a[0], floor: a[1], unit: a[2], question_id: a[3], path: a[4], taken: a[5] == null ? null : a[5], t: a[6] || 0, s: 0 };
+    const o = S.photos[a[0]];
+    photos[a[0]] = o && o.floor === a[1] && o.unit === a[2] && o.question_id === a[3] ? o      // the server's copy wins if the photo was moved
+      : { id: a[0], floor: a[1], unit: a[2], question_id: a[3], path: a[4], taken: a[5] == null ? null : a[5], t: a[6] || 0, s: 0 };
   });
   Object.keys(S.photos).forEach(k => { if (!photos[k] && S.photos[k].s > seq0) photos[k] = S.photos[k]; });
   (s.questions || []).forEach(r => {
