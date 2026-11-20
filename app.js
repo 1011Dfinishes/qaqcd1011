@@ -819,23 +819,30 @@ function photosOf(f, u, qid) {
   const saved = phCache.by[akey(f, u, qid)] || [], have = {};
   saved.forEach(p => { have[p.path] = 1; });
   const waiting = Object.keys(S.pend).map(id => S.pend[id]).filter(p => p.f === f && p.u === u && p.q === qid && !have[p.path]);
-  return saved.map(p => ({ id: p.id, src: S.blob[p.path] || sb.publicUrl(thumbOf(p.path)), full: sb.publicUrl(p.path) }))
-    .concat(waiting.map(p => ({ id: p.id, src: p.url, pending: p.state })));
+  return saved.map(p => ({ id: p.id, src: S.blob[p.path] || sb.publicUrl(thumbOf(p.path)), full: sb.publicUrl(p.path), taken: p.taken }))
+    .concat(waiting.map(p => ({ id: p.id, src: p.url, pending: p.state, taken: p.taken ? Date.parse(p.taken) : null })));
 }
 
-// small strip under a deficiency on the unit page and the punch list
+// when a photo was taken, short enough to sit under a small photo: "Nov 20, 10:24 AM"
+function fmtShortStamp(ms) {
+  if (!ms) return '';
+  const d = new Date(ms), h = d.getHours();
+  return MON[d.getMonth()] + ' ' + d.getDate() + ', ' + (h % 12 || 12) + ':' + two(d.getMinutes()) + ' ' + (h >= 12 ? 'PM' : 'AM');
+}
+
+// every photo of an item, three to a row, each with its date and time (unit page and punch list); tap one to see it large
 function photoStrip(f, u, qid) {
   const list = photosOf(f, u, qid);
   if (!list.length) return '';
-  return '<span class="dp">' + list.slice(0, 4).map(p => '<img crossorigin="anonymous" src="' + esc(p.src) + '" alt="Photo" loading="lazy"' + (p.pending ? '' : ' data-ph="' + esc(p.id) + '" data-full="' + esc(p.full) + '"') + '>').join('') +
-    (list.length > 4 ? '<span class="dpm">+' + (list.length - 4) + '</span>' : '') + '</span>';
+  return '<span class="dp">' + list.map(p => '<span class="dpi"><img crossorigin="anonymous" src="' + esc(p.src) + '" alt="Photo" loading="lazy"' + (p.pending ? '' : ' data-ph="' + esc(p.id) + '" data-full="' + esc(p.full) + '"') + '>' +
+    '<span class="dpt">' + (p.pending ? (p.pending === 'queued' ? 'Waiting for<br>signal' : 'Uploading…') : esc(fmtShortStamp(p.taken)).replace(', ', '<br>')) + '</span></span>').join('') + '</span>';
 }
 
 // the tiles on the details page
 function photoTiles(f, u, qid) {
   const list = photosOf(f, u, qid);
   let h = list.map(p => '<button type="button" class="ptile" data-act="viewph" data-id="' + esc(p.id) + '"><img crossorigin="anonymous" src="' + esc(p.src) + '" alt="Photo"' + (p.full ? ' data-full="' + esc(p.full) + '"' : '') + '>' +
-    (p.pending ? '<span class="badge">' + (p.pending === 'queued' ? 'Waiting for signal' : 'Uploading…') + '</span>' : '') + '</button>').join('');
+    (p.pending ? '<span class="badge">' + (p.pending === 'queued' ? 'Waiting for signal' : 'Uploading…') + '</span>' : p.taken ? '<span class="ptm">' + esc(fmtShortStamp(p.taken)) + '</span>' : '') + '</button>').join('');
   if (list.length < PHOTO_MAX) h += '<button type="button" class="ptile add" data-act="addph">' + CAM_SVG + '<span>Add photo</span></button>';
   return h;
 }
@@ -854,10 +861,15 @@ function viewPhoto(id) {
   const p = S.photos[id];
   if (!p) return;
   const q = QL().byId[p.question_id];
+  const all = photosOf(p.floor, p.unit, p.question_id).filter(x => !x.pending), i = all.findIndex(x => x.id === id), n = all.length;
+  const nav = n > 1 ? '<div class="pv-nav"><button type="button" class="sh-btn" id="phPrev"' + (i <= 0 ? ' disabled' : '') + '>‹ Previous</button><span>' + (i + 1) + ' of ' + n + '</span>' +
+    '<button type="button" class="sh-btn" id="phNext"' + (i >= n - 1 ? ' disabled' : '') + '>Next ›</button></div>' : '';
   openSheet('<div class="pv-wrap"><img crossorigin="anonymous" src="' + esc(sb.publicUrl(p.path)) + '" alt="Photo"></div>' +
-    '<div class="pv-meta">Floor ' + p.floor + ' · Unit ' + p.unit + (q ? ' · Item ' + q.n : '') + (p.taken ? '<br>taken ' + esc(fmtStamp(new Date(p.taken))) : '') + '</div>' +
+    '<div class="pv-meta">Floor ' + p.floor + ' · Unit ' + p.unit + (q ? ' · Item ' + q.n : '') + (p.taken ? '<br>taken ' + esc(fmtStamp(new Date(p.taken))) : '') + '</div>' + nav +
     (S.editor ? '<button type="button" class="sh-btn danger" id="phDel">Delete photo</button>' : '') + '<button type="button" class="sh-btn cancel" id="phCls">Close</button>', (el, close) => {
     $('#phCls', el).onclick = close;
+    const go = k => { const t = all[k]; if (t) { close(); setTimeout(() => viewPhoto(t.id), 0); } };
+    if (n > 1) { $('#phPrev', el).onclick = () => go(i - 1); $('#phNext', el).onclick = () => go(i + 1); }
     if (S.editor) $('#phDel', el).onclick = () => { close(); deletePhoto(id); };
   });
 }
@@ -1006,7 +1018,7 @@ async function handleFiles(f, u, qid, files, how) {
 
 function setPending(rec, state) {
   const old = S.pend[rec.id];
-  S.pend[rec.id] = { id: rec.id, f: rec.f, u: rec.u, q: rec.q, path: rec.path, url: old ? old.url : URL.createObjectURL(rec.thumb), state };
+  S.pend[rec.id] = { id: rec.id, f: rec.f, u: rec.u, q: rec.q, path: rec.path, taken: rec.taken, url: old ? old.url : URL.createObjectURL(rec.thumb), state };
   bump();
 }
 function dropPending(id) {
