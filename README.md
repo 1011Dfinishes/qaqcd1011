@@ -32,8 +32,8 @@ Live QA/QC checklist app for the plumbing rough-in inspections at 1011 1st Ave.
 
 To change the floors or the number of units, edit the `FLOORS` list at the top of `config.js`.
 
-After changing any file, raise the number in `?v=7` on the four script lines at the bottom of `index.html`
-and in `dq-shell-v7` at the top of `sw.js`, so phones pick up the new version.
+After changing any file, raise the number in `?v=8` on the four script lines at the bottom of `index.html`
+and in `dq-shell-v8` at the top of `sw.js`, so phones pick up the new version.
 
 ## Where the data lives
 

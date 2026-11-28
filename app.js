@@ -6,10 +6,10 @@ const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct
 const TOTAL_UNITS = FLOORS.reduce((n, f) => n + f.units, 0);
 const NEW_SECTION = '__new__';
 const ANSWERS = [['Y', 'Y', 'Yes'], ['N', 'N', 'No'], ['NA', 'N/A', 'Not applicable']];
-const BLANK_A = { answer: null, notes: '', corrective_action: '', responsible: '', due_date: null, corrected_on: null, verified_by: '' };
+const BLANK_A = { answer: null, notes: '', corrective_action: '', responsible: '', due_date: null, corrected_on: null, verified_by: '', fixed_by: '', fixed_on: null, verified_on: null };
 const BLANK_U = { inspected_on: null, inspected_by: '', comments: '' };
 const PHOTO_MAX = 12;             // photos per error
-const DATE_FIELDS = { due_date: 1, corrected_on: 1, inspected_on: 1 };
+const DATE_FIELDS = { due_date: 1, corrected_on: 1, inspected_on: 1, fixed_on: 1, verified_on: 1 };
 const DEPTH = { home: 0, floor: 1, questions: 1, unit: 2, punch: 2, qnew: 2, qedit: 2, detail: 3, sign: 3 };
 const ROLES = [['donato', 'Donato Representative'], ['ccm', 'CCM Representative']];
 const BACK = '<svg width="8" height="13" viewBox="0 0 8 13" aria-hidden="true"><path d="M6.4 1.4 1.4 6.5l5 5.1" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -124,7 +124,11 @@ function defStatus(r, day) {
   if (r.corrected_on) return 'closed';
   return r.due_date && r.due_date < (day || todayISO()) ? 'overdue' : 'open';
 }
-function hasDetails(r) { return !!(r.notes || r.corrective_action || r.responsible || r.due_date || r.corrected_on || r.verified_by); }
+function hasDetails(r) { return !!(r.notes || r.corrective_action || r.responsible || r.due_date || r.corrected_on || r.verified_by || r.fixed_by || r.fixed_on || r.verified_on); }
+// Fix & Verify: marked fixed (with an after photo) but not checked by an inspector yet. It still counts as open until it is verified.
+function isWaiting(r) { return !!(r && r.fixed_on && !r.corrected_on); }
+// the label an error shows: Closed, Fixed · waiting for check, Overdue or Open
+function shownStatus(r, day) { const st = defStatus(r, day); return st !== 'closed' && isWaiting(r) ? 'fixed' : st; }
 
 let statCache = { rev: -1, day: '', units: {} };
 // Not started: nothing answered. Fail: any open or overdue deficiency. Pass: every item answered and none open. Otherwise in progress.
@@ -134,7 +138,7 @@ function unitStats(f, u) {
   const k = ukey(f, u);
   if (statCache.units[k]) return statCache.units[k];
   const list = QL().list;
-  let answered = 0, defs = 0, open = 0, overdue = 0, closed = 0;
+  let answered = 0, defs = 0, open = 0, overdue = 0, closed = 0, fixed = 0;
   for (let i = 0; i < list.length; i++) {
     const q = list[i], r = ansRow(f, u, q.id);
     if (!r || !r.answer) continue;
@@ -142,18 +146,18 @@ function unitStats(f, u) {
     if (resultOf(r.answer, q.pa) !== 'def') continue;
     defs++;
     const st = defStatus(r, day);
-    if (st === 'closed') closed++; else { open++; if (st === 'overdue') overdue++; }
+    if (st === 'closed') closed++; else { open++; if (st === 'overdue') overdue++; if (isWaiting(r)) fixed++; }
   }
   const total = list.length;
   const result = answered === 0 ? 'none' : open > 0 ? 'fail' : answered >= total ? 'pass' : 'prog';
-  return (statCache.units[k] = { total, answered, defs, open, overdue, closed, result });
+  return (statCache.units[k] = { total, answered, defs, open, overdue, closed, fixed, result });
 }
 
 function floorStats(fl) {
-  const s = { pass: 0, fail: 0, prog: 0, none: 0, answered: 0, total: 0, defs: 0, open: 0, overdue: 0, closed: 0 };
+  const s = { pass: 0, fail: 0, prog: 0, none: 0, answered: 0, total: 0, defs: 0, open: 0, overdue: 0, closed: 0, fixed: 0 };
   for (let u = 1; u <= fl.units; u++) {
     const st = unitStats(fl.floor, u);
-    s[st.result]++; s.answered += st.answered; s.total += st.total; s.defs += st.defs; s.open += st.open; s.overdue += st.overdue; s.closed += st.closed;
+    s[st.result]++; s.answered += st.answered; s.total += st.total; s.defs += st.defs; s.open += st.open; s.overdue += st.overdue; s.closed += st.closed; s.fixed += st.fixed;
   }
   return s;
 }
@@ -171,7 +175,7 @@ function floorDefs(fl) {
 }
 
 const RES = { pass: ['ok', 'Pass'], fail: ['bad', 'Fail'], prog: ['prog', 'In progress'], none: ['todo', 'Not started'] };
-const DST = { open: ['warn', 'Open'], overdue: ['bad', 'Overdue'], closed: ['ok', 'Closed'] };
+const DST = { open: ['warn', 'Open'], overdue: ['bad', 'Overdue'], fixed: ['prog', 'Fixed · waiting for check'], closed: ['ok', 'Closed'] };
 const resPill = r => '<span class="pill ' + RES[r][0] + '">' + RES[r][1] + '</span>';
 const defPill = s => '<span class="pill ' + DST[s][0] + '">' + DST[s][1] + '</span>';
 
@@ -223,14 +227,15 @@ function bump() { S.rev++; }
 // Rows as the database sends them (API replies and live updates). A row only replaces an older one.
 // Each returns 1 when something changed, 0 when it is the copy we already have, -1 when it is older than ours.
 function sameFields(a, b, keys) { return keys.every(k => a[k] === b[k]); }
-const A_KEYS = ['answer', 'notes', 'corrective_action', 'responsible', 'due_date', 'corrected_on', 'verified_by'];
+const A_KEYS = ['answer', 'notes', 'corrective_action', 'responsible', 'due_date', 'corrected_on', 'verified_by', 'fixed_by', 'fixed_on', 'verified_on'];
 const U_KEYS = ['inspected_on', 'inspected_by', 'comments'];
 const Q_KEYS = ['section', 'question', 'problem_answer', 'position', 'removed', 'proof'];
 function putAnswer(r) {
   const k = akey(r.floor, r.unit, r.question_id), t = tsMs(r.updated_at), old = S.ans[k];
   if (old && old.t > t) return -1;
   const row = { floor: r.floor, unit: r.unit, question_id: r.question_id, answer: r.answer || null, notes: r.notes || '', corrective_action: r.corrective_action || '',
-    responsible: r.responsible || '', due_date: r.due_date || null, corrected_on: r.corrected_on || null, verified_by: r.verified_by || '', t, s: S.seq + 1 };
+    responsible: r.responsible || '', due_date: r.due_date || null, corrected_on: r.corrected_on || null, verified_by: r.verified_by || '',
+    fixed_by: r.fixed_by || '', fixed_on: r.fixed_on || null, verified_on: r.verified_on || null, t, s: S.seq + 1 };
   if (old && old.t === t && sameFields(old, row, A_KEYS)) return 0;
   S.ans[k] = row;
   return 1;
@@ -260,8 +265,8 @@ function putProject(r) {
 }
 function putPhoto(r) {                          // a photo only changes if it is moved to another unit or item
   const o = S.photos[r.id];
-  if (o && o.floor === r.floor && o.unit === r.unit && o.question_id === r.question_id) return 0;
-  S.photos[r.id] = { id: r.id, floor: r.floor, unit: r.unit, question_id: r.question_id, path: r.path, taken: r.taken_at ? tsMs(r.taken_at) : null, t: tsMs(r.created_at), s: S.seq + 1 };
+  if (o && o.floor === r.floor && o.unit === r.unit && o.question_id === r.question_id && o.after === !!r.after) return 0;
+  S.photos[r.id] = { id: r.id, floor: r.floor, unit: r.unit, question_id: r.question_id, path: r.path, taken: r.taken_at ? tsMs(r.taken_at) : null, t: tsMs(r.created_at), after: !!r.after, s: S.seq + 1 };
   return 1;
 }
 function putSig(r) {
@@ -303,8 +308,8 @@ function applySnapshot(s, seq0) {
   (s.photos || []).forEach(a => {
     if (S.dead['ph|' + a[0]] > seq0) return;
     const o = S.photos[a[0]];
-    photos[a[0]] = o && o.floor === a[1] && o.unit === a[2] && o.question_id === a[3] ? o      // the server's copy wins if the photo was moved
-      : { id: a[0], floor: a[1], unit: a[2], question_id: a[3], path: a[4], taken: a[5] == null ? null : a[5], t: a[6] || 0, s: 0 };
+    photos[a[0]] = o && o.floor === a[1] && o.unit === a[2] && o.question_id === a[3] && o.after === !!a[7] ? o      // the server's copy wins if the photo was moved
+      : { id: a[0], floor: a[1], unit: a[2], question_id: a[3], path: a[4], taken: a[5] == null ? null : a[5], t: a[6] || 0, after: !!a[7], s: 0 };
   });
   Object.keys(S.photos).forEach(k => { if (!photos[k] && S.photos[k].s > seq0) photos[k] = S.photos[k]; });
   (s.questions || []).forEach(r => {
@@ -316,7 +321,7 @@ function applySnapshot(s, seq0) {
     const k = akey(a[0], a[1], a[2]);
     if (S.dead['a|' + k] > seq0) return;
     const row = { floor: a[0], unit: a[1], question_id: a[2], answer: a[3] || null, t: a[4] || 0, notes: a[5] || '', corrective_action: a[6] || '', responsible: a[7] || '',
-      due_date: a[8] || null, corrected_on: a[9] || null, verified_by: a[10] || '', s: 0 }, old = S.ans[k];
+      due_date: a[8] || null, corrected_on: a[9] || null, verified_by: a[10] || '', fixed_by: a[11] || '', fixed_on: a[12] || null, verified_on: a[13] || null, s: 0 }, old = S.ans[k];
     ans[k] = old && old.t > row.t ? old : row;
   });
   (s.units || []).forEach(a => {
@@ -348,9 +353,9 @@ function exportSnapshot() {
   return {
     project: { project_location: S.project.project_location, t: S.project.t },
     questions: Object.keys(S.q).map(k => { const q = S.q[k]; return { id: q.id, section: q.section, question: q.question, problem_answer: q.problem_answer, position: q.position, removed: q.removed, proof: !!q.proof, t: q.t }; }),
-    answers: Object.keys(S.ans).map(k => { const a = S.ans[k]; return hasDetails(a) ? [a.floor, a.unit, a.question_id, a.answer, a.t, a.notes, a.corrective_action, a.responsible, a.due_date, a.corrected_on, a.verified_by] : [a.floor, a.unit, a.question_id, a.answer, a.t]; }),
+    answers: Object.keys(S.ans).map(k => { const a = S.ans[k]; return hasDetails(a) ? [a.floor, a.unit, a.question_id, a.answer, a.t, a.notes, a.corrective_action, a.responsible, a.due_date, a.corrected_on, a.verified_by, a.fixed_by, a.fixed_on, a.verified_on] : [a.floor, a.unit, a.question_id, a.answer, a.t]; }),
     units: Object.keys(S.units).map(k => { const u = S.units[k]; return [u.floor, u.unit, u.inspected_on, u.inspected_by, u.comments, u.t]; }),
-    photos: Object.keys(S.photos).map(k => { const p = S.photos[k]; return [p.id, p.floor, p.unit, p.question_id, p.path, p.taken, p.t]; }),
+    photos: Object.keys(S.photos).map(k => { const p = S.photos[k]; return [p.id, p.floor, p.unit, p.question_id, p.path, p.taken, p.t, !!p.after]; }),
     sigs: Object.keys(S.sigs).map(k => { const g = S.sigs[k]; return [g.floor, g.unit, g.role, g.print_name, g.signed_on, g.path, g.t]; })
   };
 }
@@ -618,7 +623,7 @@ VIEWS.floor = r => {
     '<div class="' + (st.prog ? 'n' : 'z') + '"><b>' + st.prog + '</b><span>In progress</span></div><div class="z"><b>' + st.none + '</b><span>Not started</span></div></div>';
   h += '<div class="ul"><a class="uc nb" href="#/f/' + f + '/punch"><div class="urw"><span>Punch list</span>' +
     (st.open ? '<span class="pill warn">' + st.open + ' open</span>' : '<span class="pill todo">None open</span>') + '</div>' +
-    '<div class="mt">' + (st.defs ? plural(st.defs, 'error', 'errors') + ' on this floor' + (st.overdue ? ' · <span class="red">' + st.overdue + ' overdue</span>' : '') + (st.closed ? ' · ' + st.closed + ' closed' : '')
+    '<div class="mt">' + (st.defs ? plural(st.defs, 'error', 'errors') + ' on this floor' + (st.overdue ? ' · <span class="red">' + st.overdue + ' overdue</span>' : '') + (st.fixed ? ' · ' + st.fixed + ' waiting for check' : '') + (st.closed ? ' · ' + st.closed + ' closed' : '')
       : 'No errors on this floor') + '</div></a></div>';
   h += '<div class="sh"><i class="dot on"></i>UNITS</div><div class="ul two">';
   for (let u = 1; u <= fl.units; u++) {
@@ -639,7 +644,7 @@ function unitResLine(st) {
   let t;
   if (st.result === 'none') t = 'Nothing answered yet';
   else if (st.result === 'pass') t = 'All ' + st.total + ' items answered, no open errors';
-  else if (st.result === 'fail') t = plural(st.open, 'open error', 'open errors') + (st.overdue ? ' · ' + st.overdue + ' overdue' : '');
+  else if (st.result === 'fail') t = plural(st.open, 'open error', 'open errors') + (st.overdue ? ' · ' + st.overdue + ' overdue' : '') + (st.fixed ? ' · ' + st.fixed + ' waiting for check' : '');
   else t = plural(st.total - st.answered, 'item', 'items') + ' left to answer';
   if (st.closed) t += ' · ' + st.closed + ' closed';
   return resPill(st.result) + '<span>' + t + '</span>';
@@ -653,11 +658,21 @@ function secCount(f, u, sec) {
 }
 
 function defBlock(f, u, q, r) {
-  const st = defStatus(r), ed = S.editor, tag = ed ? 'button' : 'div';
+  const st = shownStatus(r), ed = S.editor, tag = ed ? 'button' : 'div';
   let h = '<' + tag + (ed ? ' type="button" data-det="' + q.id + '"' : '') + ' class="df ' + st + '"><span class="dh"><b>Error</b>' + defPill(st) +
     (ed ? '<span class="dl">' + (hasDetails(r) || photosOf(f, u, q.id).length ? 'Edit details' : 'Add details') + ' ›</span>' : '') + '</span>';
   h += defDetails(r) + photoStrip(f, u, q.id);
   return h + '</' + tag + '>';
+}
+
+// under an error, for editors: "Mark as fixed" while it is open, "Verify & close" once it is fixed
+function fixButton(f, u, q, r) {
+  if (!S.editor) return '';
+  const st = shownStatus(r);
+  if (st === 'closed') return '';
+  return '<div class="fxa">' + (st === 'fixed'
+    ? '<button type="button" class="fxb vfy" data-act="verify" data-q="' + q.id + '">✓ Verify &amp; close</button>'
+    : '<button type="button" class="fxb mfx" data-act="markfixed" data-q="' + q.id + '">' + CAM_SM + 'Mark as fixed</button>') + '</div>';
 }
 
 // photos that show an OK item was done right (for questions with "Proof photos" turned on, like the shower body measurements)
@@ -676,8 +691,9 @@ function defDetails(r) {
   if (r.corrective_action) m.push('<span><b>Fix:</b> ' + esc(r.corrective_action) + '</span>');
   if (r.responsible) m.push('<span><b>Responsible:</b> ' + esc(r.responsible) + '</span>');
   if (r.due_date) m.push('<span><b>Due:</b> ' + esc(fmtISODay(r.due_date)) + '</span>');
-  if (r.corrected_on) m.push('<span><b>Corrected:</b> ' + esc(fmtISODay(r.corrected_on)) + '</span>');
-  if (r.verified_by) m.push('<span><b>Verified by:</b> ' + esc(r.verified_by) + '</span>');
+  if (r.fixed_on) m.push('<span><b>Fixed by:</b> ' + esc(r.fixed_by || '—') + ' · ' + esc(fmtISODay(r.fixed_on)) + '</span>');
+  else if (r.corrected_on) m.push('<span><b>Corrected:</b> ' + esc(fmtISODay(r.corrected_on)) + '</span>');
+  if (r.verified_by || r.verified_on) m.push('<span><b>Verified by:</b> ' + esc(r.verified_by || '—') + (r.verified_on ? ' · ' + esc(fmtISODay(r.verified_on)) : '') + '</span>');
   if (m.length) h += '<span class="dm">' + m.join('') + '</span>';
   return h;
 }
@@ -690,7 +706,7 @@ function rowHtml(f, u, q) {
     h += '<button type="button" class="ab' + (on ? ' on ' + res : '') + '" data-q="' + q.id + '" data-a="' + o[0] + '" aria-pressed="' + on + '" aria-label="Item ' + q.n + ': ' + o[2] + '"' + (S.editor ? '' : ' disabled') + '>' + o[1] + '</button>';
   });
   h += '</div>';
-  if (res === 'def') h += defBlock(f, u, q, r);
+  if (res === 'def') h += defBlock(f, u, q, r) + fixButton(f, u, q, r);
   else if (res === 'ok' && q.proof) h += proofBlock(f, u, q);
   return h + '</div>';
 }
@@ -766,7 +782,7 @@ VIEWS.detail = r => {
   const f = r.floor, u = r.unit, q = QL().byId[r.q], row = ansRow(f, u, r.q) || BLANK_A;
   const isDef = !!q && resultOf(row.answer, q.pa) === 'def';
   const back = S.detailBack === '#/f/' + f + '/punch' ? [S.detailBack, 'Punch list'] : ['#/f/' + f + '/u/' + u + '/q/' + r.q, 'Unit ' + u];
-  let h = '<div class="srow"><a class="bk" href="' + back[0] + '">' + BACK + back[1] + '</a><span id="dStatus">' + (isDef ? defPill(defStatus(row)) : '') + '</span></div>' + pendingNote();
+  let h = '<div class="srow"><a class="bk" href="' + back[0] + '">' + BACK + back[1] + '</a><span id="dStatus">' + (isDef ? defPill(shownStatus(row)) : '') + '</span></div>' + pendingNote();
   if (!isDef && q && q.proof && resultOf(row.answer, q.pa) === 'ok') {
     return h + '<div class="qsec">' + esc(q.section) + ' · Item ' + q.n + '</div><div class="qq">' + esc(q.question) + '</div>' +
       '<div class="mt">Floor ' + f + ' · Unit ' + u + ' · Answer: ' + (row.answer === 'Y' ? 'Yes' : 'No') + ' · OK</div>' +
@@ -778,34 +794,63 @@ VIEWS.detail = r => {
   h += '<div class="qsec">' + esc(q.section) + ' · Item ' + q.n + '</div><div class="qq">' + esc(q.question) + '</div>' +
     '<div class="mt">Floor ' + f + ' · Unit ' + u + ' · Answer: ' + (row.answer === 'Y' ? 'Yes' : 'No') + '</div>';
   h += '<label class="lab" for="dfNotes">Notes / error</label><textarea class="inp ta" id="dfNotes" data-df="notes" maxlength="2000" placeholder="What is wrong, and where">' + esc(row.notes) + '</textarea>';
-  h += '<div class="lab">Photos</div><div class="pgrid" id="phBox">' + photoTiles(f, u, r.q) + '</div>';
+  h += '<div class="lab">Before photos</div><div class="pgrid" id="phBox" data-kind="before">' + photoTiles(f, u, r.q, 'before') + '</div>';
   h += '<label class="lab" for="dfFix">Corrective action</label><textarea class="inp ta" id="dfFix" data-df="corrective_action" maxlength="2000" placeholder="What has to be done to fix it" style="min-height:66px">' + esc(row.corrective_action) + '</textarea>';
   h += '<label class="lab" for="dfResp">Responsible</label><input class="inp" id="dfResp" data-df="responsible" maxlength="200" autocomplete="off" placeholder="Who will fix it" value="' + esc(row.responsible) + '">';
   h += '<label class="lab" for="dfDue">Due date</label><div class="row2"><input type="date" class="inp" id="dfDue" data-df="due_date" value="' + esc(row.due_date || '') + '">' +
     '<button type="button" class="mini" data-act="setdate" data-k="due_date" data-v="">Clear</button></div>';
-  h += '<div class="sec2" style="margin-top:30px">Correction</div>';
-  h += '<label class="lab" for="dfCor">Corrected on</label><div class="row2"><input type="date" class="inp" id="dfCor" data-df="corrected_on" value="' + esc(row.corrected_on || '') + '">' +
-    '<button type="button" class="mini" data-act="setdate" data-k="corrected_on" data-v="today">Today</button><button type="button" class="mini" data-act="setdate" data-k="corrected_on" data-v="">Clear</button></div>';
-  h += '<label class="lab" for="dfVer">Verified by</label><input class="inp" id="dfVer" data-df="verified_by" maxlength="200" autocomplete="off" placeholder="Who checked the fix" value="' + esc(row.verified_by) + '">';
-  h += '<div class="fnote">Changes save by themselves. An error is Closed once “Corrected on” has a date, and Overdue once its due date has passed.</div>';
+  h += fixSection(f, u, r.q, row);
+  h += '<div class="fnote">Changes save by themselves. An error is closed once an inspector verifies the fix, and overdue once its due date has passed.</div>';
   h += '<div class="actions"><a class="btn" href="' + back[0] + '">Done</a></div>';
   return h;
 };
+
+// the Fix & verify part of the details page
+function fixSection(f, u, qid, row) {
+  const st = shownStatus(row), nAfter = photosOf(f, u, qid).filter(p => p.after).length;
+  let h = '<div class="sec2" style="margin-top:30px">Fix &amp; verify</div>';
+  if (!row.fixed_on && !row.corrected_on) {
+    h += '<div class="fxs">Not fixed yet. When the work is done, mark it fixed with a photo of the finished work. An inspector then checks it and closes it.</div>';
+    if (nAfter) h += '<div class="lab">After photos <span class="fnn">(from a fix that wasn’t accepted)</span></div><div class="pgrid" id="phAfter" data-kind="after">' + photoTiles(f, u, qid, 'after', true) + '</div>';
+    return h + '<div class="actions" style="margin-top:16px"><button type="button" class="btn grn" data-act="markfixed" data-q="' + qid + '">' + CAM_SM + 'Mark as fixed</button></div>';
+  }
+  if (row.fixed_on) {
+    h += '<label class="lab" for="dfFxBy">Fixed by</label><input class="inp" id="dfFxBy" data-df="fixed_by" maxlength="200" autocomplete="off" placeholder="Who did the work" value="' + esc(row.fixed_by) + '">';
+    h += '<label class="lab" for="dfFxOn">Date fixed</label><input type="date" class="inp" id="dfFxOn" data-df="fixed_on" value="' + esc(row.fixed_on) + '">';
+  } else {
+    h += '<label class="lab" for="dfCor">Corrected on</label><input type="date" class="inp" id="dfCor" data-df="corrected_on" value="' + esc(row.corrected_on) + '">';
+  }
+  h += '<div class="lab">After photos</div><div class="pgrid" id="phAfter" data-kind="after">' + photoTiles(f, u, qid, 'after') + '</div>';
+  if (st === 'fixed') {
+    return h + '<div class="actions" style="margin-top:16px"><button type="button" class="btn" data-act="verify" data-q="' + qid + '">✓ Verify &amp; close</button></div>';
+  }
+  h += '<label class="lab" for="dfVer">Verified by</label><input class="inp" id="dfVer" data-df="verified_by" maxlength="200" autocomplete="off" placeholder="Who checked the fix" value="' + esc(row.verified_by) + '">';
+  h += '<label class="lab" for="dfVerOn">Date verified</label><input type="date" class="inp" id="dfVerOn" data-df="verified_on" value="' + esc(row.verified_on || '') + '">';
+  return h + '<div class="actions" style="margin-top:16px"><button type="button" class="btn alt" data-act="reopen" data-q="' + qid + '">Reopen this error</button></div>';
+}
 
 function saveDetailField(k, value, r) {
   const q = QL().byId[r.q], row = ansRow(r.floor, r.unit, r.q) || BLANK_A;
   if (!q || resultOf(row.answer, q.pa) !== 'def') return;
   const v = DATE_FIELDS[k] ? (value || null) : value.trim();
   if (v === (DATE_FIELDS[k] ? (row[k] || null) : (row[k] || ''))) return;
+  if (!v && (k === 'fixed_on' || k === 'verified_on' || k === 'corrected_on' || k === 'fixed_by')) {      // emptying these would quietly reopen the error: use the buttons for that
+    const el = view.querySelector('[data-df="' + k + '"]');
+    if (el) el.value = row[k] || '';
+    toast(k === 'fixed_by' ? 'Add who fixed it.' : 'That date can’t be empty. Use “Reopen” to undo a fix.', 3600);
+    return;
+  }
   const p = {}; p[k] = v;
+  if (k === 'fixed_on' && row.corrected_on) p.corrected_on = v;      // a closed error's "corrected on" date is the day it was fixed
   queue('a', r.floor, r.unit, r.q, p);
   const ds = $('#dStatus');
-  if (ds) ds.innerHTML = defPill(defStatus(ansRow(r.floor, r.unit, r.q)));
+  if (ds) ds.innerHTML = defPill(shownStatus(ansRow(r.floor, r.unit, r.q)));
   savedToast();
   flush();
 }
 
 // ---------------------------------------------------------------- photos of a deficiency
+const CAM_SM = '<svg width="20" height="16" viewBox="0 0 38 30" aria-hidden="true"><path d="M4 7h7l3-4h10l3 4h7a3 3 0 0 1 3 3v15a3 3 0 0 1-3 3H4a3 3 0 0 1-3-3V10a3 3 0 0 1 3-3z" fill="none" stroke="currentColor" stroke-width="2.6"/><circle cx="19" cy="17" r="6.5" fill="none" stroke="currentColor" stroke-width="2.6"/></svg>';
 const CAM_SVG = '<svg width="30" height="24" viewBox="0 0 38 30" aria-hidden="true"><path d="M4 7h7l3-4h10l3 4h7a3 3 0 0 1 3 3v15a3 3 0 0 1-3 3H4a3 3 0 0 1-3-3V10a3 3 0 0 1 3-3z" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="19" cy="17" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/></svg>';
 const thumbOf = path => path.replace(/\.jpg$/, '_t.jpg');
 const newId = () => (window.crypto && crypto.randomUUID ? crypto.randomUUID() : 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
@@ -822,8 +867,9 @@ function photosOf(f, u, qid) {
   const saved = phCache.by[akey(f, u, qid)] || [], have = {};
   saved.forEach(p => { have[p.path] = 1; });
   const waiting = Object.keys(S.pend).map(id => S.pend[id]).filter(p => p.f === f && p.u === u && p.q === qid && !have[p.path]);
-  return saved.map(p => ({ id: p.id, src: S.blob[p.path] || sb.publicUrl(thumbOf(p.path)), full: sb.publicUrl(p.path), taken: p.taken }))
-    .concat(waiting.map(p => ({ id: p.id, src: p.url, pending: p.state, taken: p.taken ? Date.parse(p.taken) : null })));
+  const all = saved.map(p => ({ id: p.id, src: S.blob[p.path] || sb.publicUrl(thumbOf(p.path)), full: sb.publicUrl(p.path), taken: p.taken, after: !!p.after }))
+    .concat(waiting.map(p => ({ id: p.id, src: p.url, pending: p.state, taken: p.taken ? Date.parse(p.taken) : null, after: !!p.after })));
+  return all.filter(p => !p.after).concat(all.filter(p => p.after));      // the error's photos first, then the photos of the fix
 }
 
 // when a photo was taken, short enough to sit under a small photo: "Nov 20, 10:24 AM"
@@ -835,24 +881,32 @@ function fmtShortStamp(ms) {
 
 // every photo of an item, three to a row, each with its date and time (unit page and punch list); tap one to see it large
 function photoStrip(f, u, qid) {
-  const list = photosOf(f, u, qid);
+  const list = photosOf(f, u, qid);                  // before photos first, then after photos
   if (!list.length) return '';
-  return '<span class="dp">' + list.map(p => '<span class="dpi"><img crossorigin="anonymous" src="' + esc(p.src) + '" alt="Photo" loading="lazy"' + (p.pending ? '' : ' data-ph="' + esc(p.id) + '" data-full="' + esc(p.full) + '"') + '>' +
+  return stripOf(list, list.some(p => p.after));     // once there is a fix, each photo says whether it is BEFORE or AFTER
+}
+function stripOf(list, kinds) {
+  return '<span class="dp">' + list.map(p => '<span class="dpi"><img crossorigin="anonymous" src="' + esc(p.src) + '" alt="' + (kinds ? (p.after ? 'After photo' : 'Before photo') : 'Photo') + '" loading="lazy"' + (p.pending ? '' : ' data-ph="' + esc(p.id) + '" data-full="' + esc(p.full) + '"') + '>' +
+    (kinds ? '<span class="dpk' + (p.after ? ' af">After' : '">Before') + '</span>' : '') +
     '<span class="dpt">' + (p.pending ? (p.pending === 'queued' ? 'Waiting for<br>signal' : 'Uploading…') : esc(fmtShortStamp(p.taken)).replace(', ', '<br>')) + '</span></span>').join('') + '</span>';
 }
 
-// the tiles on the details page
-function photoTiles(f, u, qid) {
-  const list = photosOf(f, u, qid);
+// the tiles on the details page: all of the item's photos, or only the "before" or only the "after" ones
+function photoTiles(f, u, qid, kind, noAdd) {
+  const list = photosOf(f, u, qid).filter(p => !kind || p.after === (kind === 'after'));
   let h = list.map(p => '<button type="button" class="ptile" data-act="viewph" data-id="' + esc(p.id) + '"><img crossorigin="anonymous" src="' + esc(p.src) + '" alt="Photo"' + (p.full ? ' data-full="' + esc(p.full) + '"' : '') + '>' +
     (p.pending ? '<span class="badge">' + (p.pending === 'queued' ? 'Waiting for signal' : 'Uploading…') + '</span>' : p.taken ? '<span class="ptm">' + esc(fmtShortStamp(p.taken)) + '</span>' : '') + '</button>').join('');
-  if (list.length < PHOTO_MAX) h += '<button type="button" class="ptile add" data-act="addph">' + CAM_SVG + '<span>Add photo</span></button>';
+  if (list.length < PHOTO_MAX && !noAdd) h += '<button type="button" class="ptile add" data-act="addph"' + (kind === 'after' ? ' data-after="1"' : '') + '>' + CAM_SVG + '<span>' + (kind === 'after' ? 'Add after photo' : 'Add photo') + '</span></button>';
   return h;
 }
 // redraw just the photo tiles (works even while a text box has the cursor)
 function refreshPhotos() {
-  const r = curRoute, b = $('#phBox');
-  if (b && r.view === 'detail') b.innerHTML = photoTiles(r.floor, r.unit, r.q);
+  const r = curRoute;
+  if (r.view !== 'detail') return;
+  const row = ansRow(r.floor, r.unit, r.q) || BLANK_A, fixedOrClosed = !!(row.fixed_on || row.corrected_on);
+  const box = $('#phBox'), aft = $('#phAfter');
+  if (box) box.innerHTML = photoTiles(r.floor, r.unit, r.q, box.dataset.kind || null);
+  if (aft) aft.innerHTML = photoTiles(r.floor, r.unit, r.q, 'after', !fixedOrClosed);      // after photos are added with "Mark as fixed" until then
 }
 // a thumbnail that fails to load falls back to the full-size photo
 view.addEventListener('error', e => {
@@ -864,11 +918,11 @@ function viewPhoto(id) {
   const p = S.photos[id];
   if (!p) return;
   const q = QL().byId[p.question_id];
-  const all = photosOf(p.floor, p.unit, p.question_id).filter(x => !x.pending), i = all.findIndex(x => x.id === id), n = all.length;
+  const all = photosOf(p.floor, p.unit, p.question_id).filter(x => !x.pending), i = all.findIndex(x => x.id === id), n = all.length, kinds = all.some(x => x.after);
   const nav = n > 1 ? '<div class="pv-nav"><button type="button" class="sh-btn" id="phPrev"' + (i <= 0 ? ' disabled' : '') + '>‹ Previous</button><span>' + (i + 1) + ' of ' + n + '</span>' +
     '<button type="button" class="sh-btn" id="phNext"' + (i >= n - 1 ? ' disabled' : '') + '>Next ›</button></div>' : '';
   openSheet('<div class="pv-wrap"><img crossorigin="anonymous" src="' + esc(sb.publicUrl(p.path)) + '" alt="Photo"></div>' +
-    '<div class="pv-meta">Floor ' + p.floor + ' · Unit ' + p.unit + (q ? ' · Item ' + q.n : '') + (p.taken ? '<br>taken ' + esc(fmtStamp(new Date(p.taken))) : '') + '</div>' + nav +
+    '<div class="pv-meta">' + (kinds ? '<b>' + (p.after ? 'After photo' : 'Before photo') + '</b> · ' : '') + 'Floor ' + p.floor + ' · Unit ' + p.unit + (q ? ' · Item ' + q.n : '') + (p.taken ? '<br>taken ' + esc(fmtStamp(new Date(p.taken))) : '') + '</div>' + nav +
     (S.editor ? '<button type="button" class="sh-btn danger" id="phDel">Delete photo</button>' : '') + '<button type="button" class="sh-btn cancel" id="phCls">Close</button>', (el, close) => {
     $('#phCls', el).onclick = close;
     const go = k => { const t = all[k]; if (t) { close(); setTimeout(() => viewPhoto(t.id), 0); } };
@@ -909,12 +963,12 @@ async function pendingPhoto(id) {
   render(); refreshPhotos();
 }
 
-async function addPhoto(r) {
-  const how = await choose('Add a photo', [{ label: 'Take Photo', value: 'cam' }, { label: 'Choose from Photos', value: 'lib' }]);
+async function addPhoto(r, after) {
+  const how = await choose(after ? 'Add an after photo' : 'Add a photo', [{ label: 'Take Photo', value: 'cam' }, { label: 'Choose from Photos', value: 'lib' }]);
   if (!how) return;
   const inp = $(how === 'cam' ? '#camIn' : '#libIn');
   inp.value = '';
-  inp.onchange = () => { const files = Array.prototype.slice.call(inp.files || []); if (files.length) handleFiles(r.floor, r.unit, r.q, files, how); };
+  inp.onchange = () => { const files = Array.prototype.slice.call(inp.files || []); if (files.length) handleFiles(r.floor, r.unit, r.q, files, how, after); };
   inp.click();
 }
 
@@ -959,7 +1013,7 @@ async function loadImage(blob) {
 const toBlob = (c, type, q) => new Promise((res, rej) => c.toBlob(b => (b ? res(b) : rej(new Error('Couldn’t save the photo.'))), type, q));
 
 // Shrink the photo (the whole frame is kept) and burn in the date, time, address, floor and unit.
-async function stampPhoto(img, date, f, u) {
+async function stampPhoto(img, date, f, u, label) {
   const sw = img.naturalWidth, sh = img.naturalHeight, s = Math.min(1, 1600 / Math.max(sw, sh));
   const W = Math.max(1, Math.round(sw * s)), H = Math.max(1, Math.round(sh * s));
   const c = document.createElement('canvas'); c.width = W; c.height = H;
@@ -972,7 +1026,7 @@ async function stampPhoto(img, date, f, u) {
   x.font = '600 ' + fs + 'px -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif';
   x.fillStyle = '#fff'; x.shadowColor = 'rgba(0,0,0,0.55)'; x.shadowBlur = Math.max(2, Math.round(fs / 8)); x.shadowOffsetY = 2;
   x.fillText(fmtStamp(date), pad, H - pad - Math.round(fs * 1.35), W - 2 * pad);
-  x.fillText([S.project.project_location, 'Floor ' + f, 'Unit ' + u].filter(Boolean).join(' · '), pad, H - pad, W - 2 * pad);
+  x.fillText([S.project.project_location, 'Floor ' + f, 'Unit ' + u, label].filter(Boolean).join(' · '), pad, H - pad, W - 2 * pad);
   const main = await toBlob(c, 'image/jpeg', 0.8);
   const ts = Math.min(1, 400 / Math.max(W, H)), t = document.createElement('canvas');
   t.width = Math.max(1, Math.round(W * ts)); t.height = Math.max(1, Math.round(H * ts));
@@ -993,8 +1047,11 @@ function askDate(fallback) {
   });
 }
 
-async function handleFiles(f, u, qid, files, how) {
-  const room = PHOTO_MAX - photosOf(f, u, qid).length;
+// returns how many photos were added
+async function handleFiles(f, u, qid, files, how, after) {
+  after = !!after;
+  let added = 0;
+  const room = PHOTO_MAX - photosOf(f, u, qid).filter(p => p.after === after).length;
   if (files.length > room) { files = files.slice(0, Math.max(0, room)); toast('An item can have up to ' + PHOTO_MAX + ' photos.', 3600); }
   for (const file of files) {
     let date = null;
@@ -1005,23 +1062,25 @@ async function handleFiles(f, u, qid, files, how) {
     let out;
     try {
       const { img, done } = await loadImage(file);
-      out = await stampPhoto(img, date, f, u);
+      out = await stampPhoto(img, date, f, u, after ? 'After fix' : '');
       done();
     } catch (e) { busy(false); toast(e.message || 'That photo couldn’t be opened.', 3600); continue; }
     busy(false);
     const id = newId();
-    const rec = { id, f, u, q: qid, path: 'f' + f + '/u' + u + '/q' + qid + '/' + Date.now() + '-' + id.replace(/[^a-z0-9]/gi, '').slice(0, 8) + '.jpg', taken: date.toISOString(), main: out.main, thumb: out.thumb };
+    const rec = { id, f, u, q: qid, path: 'f' + f + '/u' + u + '/q' + qid + '/' + Date.now() + '-' + id.replace(/[^a-z0-9]/gi, '').slice(0, 8) + '.jpg', taken: date.toISOString(), after, main: out.main, thumb: out.thumb };
     MEM[id] = rec;
     setPending(rec, 'uploading');
     await Queue.put(rec).catch(() => {});                 // kept on the phone until it is safely uploaded
+    added++;
     render(); refreshPhotos();
   }
   flushPhotos();
+  return added;
 }
 
 function setPending(rec, state) {
   const old = S.pend[rec.id];
-  S.pend[rec.id] = { id: rec.id, f: rec.f, u: rec.u, q: rec.q, path: rec.path, taken: rec.taken, url: old ? old.url : URL.createObjectURL(rec.thumb), state };
+  S.pend[rec.id] = { id: rec.id, f: rec.f, u: rec.u, q: rec.q, path: rec.path, taken: rec.taken, after: !!rec.after, url: old ? old.url : URL.createObjectURL(rec.thumb), state };
   bump();
 }
 function dropPending(id) {
@@ -1035,7 +1094,7 @@ function dropPending(id) {
 async function uploadRec(rec) {
   await sb.upload(rec.path, rec.main, 'image/jpeg');
   await sb.upload(thumbOf(rec.path), rec.thumb, 'image/jpeg');
-  const rows = await sb.rest('POST', 'roughin_photos?on_conflict=path', [{ floor: rec.f, unit: rec.u, question_id: rec.q, path: rec.path, taken_at: rec.taken }], 'resolution=ignore-duplicates,return=representation');
+  const rows = await sb.rest('POST', 'roughin_photos?on_conflict=path', [{ floor: rec.f, unit: rec.u, question_id: rec.q, path: rec.path, taken_at: rec.taken, after: !!rec.after }], 'resolution=ignore-duplicates,return=representation');
   if (rows && rows[0]) putPhoto(rows[0]); else scheduleRefresh();          // already recorded by an earlier try
   applied();
 }
@@ -1112,6 +1171,93 @@ async function restorePhotos() {
   try { (await Queue.all()).forEach(rec => setPending(rec, 'queued')); } catch (e) { /* no storage */ }
   refreshPhotos(); scheduleRender();
   flushPhotos();
+}
+
+// ---------------------------------------------------------------- Fix & Verify
+function fixChanged(f, u, qid, msg) {
+  if (curRoute.view === 'unit') refreshRow(f, u, qid); else render({ force: true });
+  toast(S.netDown || navigator.onLine === false ? 'Saved on this phone. It uploads when you have signal.' : msg, S.netDown ? 3600 : 2400);
+  flush();
+}
+
+// Step 1: whoever did the work marks it fixed, with a photo of the finished work (no photo, no fix)
+function markFixed(f, u, qid) {
+  const q = QL().byId[qid], r = ansRow(f, u, qid);
+  if (!S.editor || !q || !r || resultOf(r.answer, q.pa) !== 'def' || r.corrected_on || r.fixed_on) return;
+  const name = r.responsible || store.get('dq_fixer', '');
+  openSheet('<div class="sh-title">Mark as fixed</div><div class="sh-text">Take a photo of the finished work. It goes next to the error’s photos as the AFTER photo, so the inspector can check the fix.</div>' +
+    '<label class="lab" for="fxBy">Fixed by</label><input class="inp" id="fxBy" maxlength="200" autocomplete="off" placeholder="Who did the work" value="' + esc(name) + '">' +
+    '<label class="lab" for="fxOn">Date fixed</label><input type="date" class="inp" id="fxOn" value="' + todayISO() + '" max="' + todayISO() + '">' +
+    '<div class="ferr" id="fxErr"></div>' +
+    '<button type="button" class="sh-btn strong" id="fxCam">Take after photo</button><button type="button" class="sh-btn" id="fxLib">Choose from Photos</button>' +
+    '<button type="button" class="sh-btn cancel" id="fxNo">Cancel</button>', (el, close) => {
+    const go = how => {
+      const by = oneLine($('#fxBy', el).value), on = $('#fxOn', el).value || todayISO();
+      const err = $('#fxErr', el);
+      if (!by) { err.textContent = 'Add who fixed it.'; $('#fxBy', el).focus(); return; }
+      if (on > todayISO()) { err.textContent = 'The date fixed can’t be in the future.'; return; }
+      const inp = $(how === 'cam' ? '#camIn' : '#libIn');
+      inp.value = '';
+      inp.onchange = async () => {
+        const files = Array.prototype.slice.call(inp.files || []);
+        if (!files.length) return;
+        const n = await handleFiles(f, u, qid, files, how, true);
+        const now = ansRow(f, u, qid);
+        if (!n || !now || now.fixed_on || now.corrected_on) return;             // no photo, no fix
+        queue('a', f, u, qid, { fixed_by: by, fixed_on: on });
+        store.set('dq_fixer', by);
+        fixChanged(f, u, qid, '✓ Marked as fixed. Waiting for check.');
+      };
+      close();
+      inp.click();
+    };
+    $('#fxCam', el).onclick = () => go('cam');
+    $('#fxLib', el).onclick = () => go('lib');
+    $('#fxNo', el).onclick = close;
+  });
+}
+
+// Step 2: an inspector looks at the before and after photos and closes it (or sends it back)
+function verifyFix(f, u, qid) {
+  const q = QL().byId[qid], r = ansRow(f, u, qid);
+  if (!S.editor || !q || !r || !isWaiting(r)) return;
+  const name = store.get('dq_name', '') || unitRow(f, u).inspected_by || '';
+  const nAfter = photosOf(f, u, qid).filter(p => p.after).length;
+  openSheet('<div class="sh-title">Verify the fix</div><div class="sh-text">Fixed by ' + esc(r.fixed_by || '—') + ' on ' + esc(fmtISODay(r.fixed_on)) + ' · ' + plural(nAfter, 'after photo', 'after photos') + '</div>' +
+    '<label class="lab" for="vfBy">Verified by</label><input class="inp" id="vfBy" maxlength="200" autocomplete="name" placeholder="Who checked the fix" value="' + esc(name) + '">' +
+    '<label class="lab" for="vfOn">Date verified</label><input type="date" class="inp" id="vfOn" value="' + todayISO() + '" max="' + todayISO() + '">' +
+    '<div class="ferr" id="vfErr"></div>' +
+    '<button type="button" class="sh-btn strong" id="vfOk">Close the error</button><button type="button" class="sh-btn danger" id="vfBad">Not fixed – send it back</button>' +
+    '<button type="button" class="sh-btn cancel" id="vfNo">Cancel</button>', (el, close) => {
+    $('#vfOk', el).onclick = () => {
+      const by = oneLine($('#vfBy', el).value), on = $('#vfOn', el).value || todayISO(), err = $('#vfErr', el);
+      if (!by) { err.textContent = 'Add who checked it.'; $('#vfBy', el).focus(); return; }
+      if (on > todayISO()) { err.textContent = 'The date can’t be in the future.'; return; }
+      const now = ansRow(f, u, qid);
+      if (!isWaiting(now)) { close(); render({ force: true }); return; }
+      close();
+      queue('a', f, u, qid, { verified_by: by, verified_on: on, corrected_on: now.fixed_on });
+      store.set('dq_name', by);
+      fixChanged(f, u, qid, '✓ Error closed');
+    };
+    $('#vfBad', el).onclick = () => {
+      close();
+      if (!isWaiting(ansRow(f, u, qid))) return;
+      queue('a', f, u, qid, { fixed_by: '', fixed_on: null });
+      fixChanged(f, u, qid, 'Sent back: the error is open again. Its after photos stay with it.');
+    };
+    $('#vfNo', el).onclick = close;
+  });
+}
+
+// a closed error that turns out not to be right: back to "waiting for check" (or open, if it was closed the old way)
+async function reopenFix(f, u, qid) {
+  const r = ansRow(f, u, qid);
+  if (!S.editor || !r || !r.corrected_on) return;
+  const ok = await choose('Reopen this error?', [{ label: 'Reopen', value: true, style: 'danger' }], r.fixed_on ? 'It goes back to “waiting for check”.' : 'It goes back to open.');
+  if (!ok) return;
+  queue('a', f, u, qid, { corrected_on: null, verified_by: '', verified_on: null });
+  fixChanged(f, u, qid, 'Reopened');
 }
 
 // ---------------------------------------------------------------- sign-off (two signatures per unit)
@@ -1307,8 +1453,9 @@ async function unitReportData(f, u, waiting, onPhoto) {
     const photos = [], list = photosOf(f, u, qid);
     for (let k = 0; k < list.length; k++) {
       const p = list[k], saved = S.photos[p.id], taken = saved ? saved.taken : null;
-      const label = 'Photo ' + (k + 1) + (taken ? ' · ' + fmtWhen(taken) : p.pending ? ' · not uploaded yet' : '');
-      try { photos.push(Object.assign({ label }, await pdfPhoto(p, waiting))); } catch (e) { photos.push({ label, jpeg: null }); }
+      const nth = list.slice(0, k + 1).filter(x => x.after === p.after).length;      // numbered separately before and after
+      const label = 'Photo ' + nth + (taken ? ' · ' + fmtWhen(taken) : p.pending ? ' · not uploaded yet' : '');
+      try { photos.push(Object.assign({ label, after: p.after }, await pdfPhoto(p, waiting))); } catch (e) { photos.push({ label, after: p.after, jpeg: null }); }
       if (onPhoto) onPhoto();
     }
     return photos;
@@ -1322,8 +1469,9 @@ async function unitReportData(f, u, waiting, onPhoto) {
     }
     if (res !== 'def') continue;
     const photos = await pdfPhotos(q.id);
-    defs.push({ ref: 'U' + two(u) + '-' + two(q.n), section: q.section, question: q.question, st: defStatus(r, day), notes: r.notes, corrective: r.corrective_action,
-      responsible: r.responsible, due: fmtISODay(r.due_date), corrected: fmtISODay(r.corrected_on), verified: r.verified_by, photos });
+    defs.push({ ref: 'U' + two(u) + '-' + two(q.n), section: q.section, question: q.question, st: shownStatus(r, day), notes: r.notes, corrective: r.corrective_action,
+      responsible: r.responsible, due: fmtISODay(r.due_date), fixedBy: r.fixed_by, fixedOn: fmtISODay(r.fixed_on || r.corrected_on), verified: r.verified_by,
+      verifiedOn: fmtISODay(r.verified_on), photos });
   }
   const sigs = {};
   for (const [role] of ROLES) {
@@ -1382,7 +1530,7 @@ async function exportFloor(f) {
     }
     const all = floorDefs(fl);
     const defs = all.map(d => ({ ref: 'U' + two(d.u) + '-' + two(d.q.n), section: d.q.section, question: d.q.question, notes: d.r.notes, corrective: d.r.corrective_action,
-      responsible: d.r.responsible, dueShort: fmtShortDay(d.r.due_date), st: d.st }));
+      responsible: d.r.responsible, dueShort: fmtShortDay(d.r.due_date), st: shownStatus(d.r), late: d.st === 'overdue' }));
     const by = {};
     all.forEach(d => { const b = by[d.q.section] || (by[d.q.section] = { total: 0, open: 0 }); b.total++; if (d.st !== 'closed') b.open++; });
     const bySection = ql.secs.map(s => ({ name: s.name, total: (by[s.name] || {}).total || 0, open: (by[s.name] || {}).open || 0 }));
@@ -1421,18 +1569,19 @@ function pdfReady(title, name, bytes) {
 // ---------------------------------------------------------------- punch list
 VIEWS.punch = r => {
   const fl = floorOf(r.floor), f = fl.floor, ql = QL(), all = floorDefs(fl);
-  const nOpen = all.filter(d => d.st !== 'closed').length, nOver = all.filter(d => d.st === 'overdue').length, nClosed = all.length - nOpen;
-  const shown = all.filter(d => S.pf === 'all' || (S.pf === 'closed') === (d.st === 'closed'));
+  all.forEach(d => { d.sh = shownStatus(d.r); });
+  const nOpen = all.filter(d => d.st !== 'closed').length, nOver = all.filter(d => d.st === 'overdue').length, nClosed = all.length - nOpen, nWait = all.filter(d => d.sh === 'fixed').length;
+  const shown = all.filter(d => S.pf === 'all' || (S.pf === 'fixed' ? d.sh === 'fixed' : (S.pf === 'closed') === (d.st === 'closed')));
   let h = '<div class="srow"><a class="bk" href="#/f/' + f + '">' + BACK + 'Floor ' + f + '</a><span>' + nOpen + ' open' + (nOver ? ' · <span class="red">' + nOver + ' overdue</span>' : '') + '</span></div>' + pendingNote();
-  h += '<div class="chips">' + [['open', 'Open', nOpen], ['closed', 'Closed', nClosed], ['all', 'All', all.length]].map(c =>
+  h += '<div class="chips">' + [['open', 'Open', nOpen], ['fixed', 'To check', nWait], ['closed', 'Closed', nClosed], ['all', 'All', all.length]].map(c =>
     '<button type="button" class="chip' + (S.pf === c[0] ? ' on' : '') + '" data-act="filter" data-v="' + c[0] + '" aria-pressed="' + (S.pf === c[0]) + '">' + c[1] + ' ' + c[2] + '</button>').join('') + '</div>';
   if (!shown.length) {
-    h += '<div class="empty" style="padding:34px 10px">' + (!all.length ? 'No errors on Floor ' + f + '.' : S.pf === 'open' ? 'No open errors on Floor ' + f + '. ✓' : 'No closed errors on Floor ' + f + ' yet.') + '</div>';
+    h += '<div class="empty" style="padding:34px 10px">' + (!all.length ? 'No errors on Floor ' + f + '.' : S.pf === 'open' ? 'No open errors on Floor ' + f + '. ✓' : S.pf === 'fixed' ? 'Nothing on Floor ' + f + ' is waiting to be checked.' : 'No closed errors on Floor ' + f + ' yet.') + '</div>';
   }
   let unit = 0;
   shown.forEach(d => {
     if (d.u !== unit) { unit = d.u; h += '<div class="pu"><span>UNIT ' + unit + '</span><a href="#/f/' + f + '/u/' + unit + '">Open unit ›</a></div>'; }
-    h += '<a class="pc ' + d.st + '" href="#/f/' + f + '/u/' + d.u + '/' + (S.editor ? 'd' : 'q') + '/' + d.q.id + '"><span class="pt"><span>U' + two(d.u) + '-' + two(d.q.n) + ' · ' + esc(d.q.section) + '</span>' + defPill(d.st) + '</span>' +
+    h += '<a class="pc ' + d.sh + '" href="#/f/' + f + '/u/' + d.u + '/' + (S.editor ? 'd' : 'q') + '/' + d.q.id + '"><span class="pt"><span>U' + two(d.u) + '-' + two(d.q.n) + ' · ' + esc(d.q.section) + '</span>' + defPill(d.sh) + '</span>' +
       '<span class="pq">' + esc(d.q.question) + '</span>' + defDetails(d.r) + photoStrip(f, d.u, d.q.id) + '</a>';
   });
   if (all.length) {
@@ -1698,7 +1847,7 @@ view.addEventListener('click', e => {
   else if (act === 'signout') signOut();
   else if (act === 'filter') { S.pf = b.dataset.v; render({ force: true }); }
   else if (act === 'viewph') { if (S.pend[b.dataset.id]) pendingPhoto(b.dataset.id); else viewPhoto(b.dataset.id); }
-  else if (act === 'addph' && r.view === 'detail' && S.editor) addPhoto(r);
+  else if (act === 'addph' && r.view === 'detail' && S.editor) addPhoto(r, b.dataset.after === '1');
   else if (act === 'gosign' && r.view === 'unit') goSign(r.floor, r.unit);
   else if (act === 'pdfunit' && (r.view === 'unit' || r.view === 'sign')) exportUnit(r.floor, r.unit);
   else if (act === 'pdffloor' && r.view === 'floor') exportFloor(r.floor);
@@ -1711,6 +1860,9 @@ view.addEventListener('click', e => {
     saveDetailField(k, v, r);
   }
   else if (!S.editor) return;
+  else if (act === 'markfixed' && (r.view === 'unit' || r.view === 'detail')) markFixed(r.floor, r.unit, +b.dataset.q);
+  else if (act === 'verify' && (r.view === 'unit' || r.view === 'detail')) verifyFix(r.floor, r.unit, +b.dataset.q);
+  else if (act === 'reopen' && r.view === 'detail') reopenFix(r.floor, r.unit, +b.dataset.q);
   else if (act === 'addq') { S.newSec = b.dataset.s === '' ? null : +b.dataset.s; S.draft = null; location.hash = '#/questions/new'; }
   else if (act === 'editq') location.hash = '#/questions/e/' + b.dataset.id;
   else if (act === 'ren') { const sec = QL().secs[+b.dataset.s]; if (sec) { S.ren = { name: sec.name, value: sec.name }; render({ force: true }); const i = $('#renIn'); if (i) i.focus(); } }

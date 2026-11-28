@@ -219,9 +219,10 @@ const SEC_FILL = [0.925, 0.942, 0.962], DEF_FILL = [0.99, 0.93, 0.925], OK_FILL 
 const LDW = 360, LDH = 360 * 195 / 1377;
 const RESULT_TEXT = { pass: 'PASS', fail: 'FAIL', prog: 'IN PROGRESS', none: 'NOT STARTED' };
 const RESULT_COLOR = { pass: GREEN, fail: RED, prog: NAVY, none: GREY };
-const STATUS_TEXT = { open: 'OPEN', overdue: 'OVERDUE', closed: 'CLOSED' };
-const STATUS_COLOR = { open: AMBER, overdue: RED, closed: GREEN };
-const STATUS_FILL = { open: WARN_FILL, overdue: DEF_FILL, closed: OK_FILL };
+const STATUS_TEXT = { open: 'OPEN', overdue: 'OVERDUE', fixed: 'FIXED', closed: 'CLOSED' };
+const STATUS_LONG = { open: 'OPEN', overdue: 'OVERDUE', fixed: 'FIXED · NOT YET VERIFIED', closed: 'CLOSED' };
+const STATUS_COLOR = { open: AMBER, overdue: RED, fixed: NAVY, closed: GREEN };
+const STATUS_FILL = { open: WARN_FILL, overdue: DEF_FILL, fixed: WARN_FILL, closed: OK_FILL };
 
 function letterhead(p, lh) {
   pImage(p, lh, PL, PH - 38 - LDH, LDW, LDH);
@@ -390,8 +391,10 @@ function unitReport(doc, lh, u) {
         const sc = ph.img ? Math.min(CW / ph.w, MAXH / ph.h) : 0;
         return Object.assign({}, ph, { dw: ph.img ? ph.w * sc : CW, dh: ph.img ? ph.h * sc : CW * 0.75 });
       });
-      const rowH = k => Math.max.apply(null, sized.slice(k, k + PER).map(r => r.dh)) + 14 + 4;
-      const textH = 22 + qLines.length * 13 + 8 + longs.reduce((t, l) => t + l[1].length * VL + 3, 0) + 2 * VL + 6;
+      // once there is a fix, each photo is marked BEFORE (the error) or AFTER (the finished work); before photos come first
+      const kinds = sized.some(ph => ph.after), KH = kinds ? 12 : 0;
+      const rowH = k => Math.max.apply(null, sized.slice(k, k + PER).map(r => r.dh)) + KH + 14 + 4;
+      const textH = 22 + qLines.length * 13 + 8 + longs.reduce((t, l) => t + l[1].length * VL + 3, 0) + 3 * VL + 6;
       const whole = textH + (sized.length ? rowH(0) : 0);
       const need = whole <= PH - 230 ? whole : 22 + qLines.length * 13 + 8 + 2 * VL;
       if (di === 0) { fl.ensure(27 + need); defHead(); fl.cont = () => heading(fl, 'ERRORS (continued)'); }      // the heading stays with the first one
@@ -399,7 +402,7 @@ function unitReport(doc, lh, u) {
       let pp = fl.p, top = fl.y;
       // header strip
       pText(pp, PL, top - 12.5, fitText(d.ref + '   ·   ' + d.section, 'B', 11, PTW - 90), 'B', 11);
-      pTextR(pp, PR, top - 12.5, STATUS_TEXT[d.st], 'B', 9.5);
+      pTextR(pp, PR, top - 12.5, STATUS_LONG[d.st], 'B', 9.5);
       pLine(pp, PL, top - 18, PR, top - 18, 0.5, RULE);
       fl.y -= 18 + 4;
       qLines.forEach((ln, j) => pText(pp, PL + 6, fl.y - 10 - j * 13, ln, 'I', 10.5));
@@ -414,9 +417,9 @@ function unitReport(doc, lh, u) {
         });
         fl.y -= 3;
       });
-      // the four short fields, two to a line
-      const shorts = [['Responsible:', d.responsible], ['Due date:', d.due], ['Corrected on:', d.corrected], ['Verified by:', d.verified]];
-      for (let k = 0; k < 4; k += 2) {
+      // the six short fields, two to a line
+      const shorts = [['Responsible:', d.responsible], ['Due date:', d.due], ['Fixed by:', d.fixedBy], ['Date fixed:', d.fixedOn], ['Verified by:', d.verified], ['Date verified:', d.verifiedOn]];
+      for (let k = 0; k < 6; k += 2) {
         if (fl.ensure(VL + 2)) pp = fl.p;
         [shorts[k], shorts[k + 1]].forEach(([label, v], c) => {
           const x = PL + 6 + c * (PTW / 2);
@@ -427,19 +430,18 @@ function unitReport(doc, lh, u) {
       }
       fl.y -= 6;
       // photos, three to a row
-      if (sized.length) {
-        for (let k = 0; k < sized.length; k += PER) {
-          const row = sized.slice(k, k + PER), rh = rowH(k) - 4;
-          if (fl.ensure(rh + 4)) pp = fl.p;
-          row.forEach((ph, c) => {
-            const cx = PL + 6 + c * (CW + GAP), x = cx + (CW - ph.dw) / 2, yTop = fl.y - 2;
-            if (ph.img) pImage(pp, ph.img, x, yTop - ph.dh, ph.dw, ph.dh);
-            else { pFill(pp, x, yTop - ph.dh, ph.dw, ph.dh, 0.95); pTextC(pp, cx + CW / 2, yTop - ph.dh / 2 - 3, 'Photo not available', 'I', 8, GREY); }
-            pRect(pp, x, yTop - ph.dh, ph.dw, ph.dh, 0.6, FRAME);
-            pTextC(pp, cx + CW / 2, yTop - ph.dh - 10, fitText(ph.label, 'I', 7.8, CW), 'I', 7.8, GREY);
-          });
-          fl.y -= rh + 4;
-        }
+      for (let k = 0; k < sized.length; k += PER) {
+        const row = sized.slice(k, k + PER), rh = rowH(k) - 4;
+        if (fl.ensure(rh + 4)) pp = fl.p;
+        row.forEach((ph, c) => {
+          const cx = PL + 6 + c * (CW + GAP), x = cx + (CW - ph.dw) / 2, yTop = fl.y - 2 - KH;
+          if (kinds) pText(pp, x, yTop + 3.5, ph.after ? 'AFTER' : 'BEFORE', 'B', 8.5);
+          if (ph.img) pImage(pp, ph.img, x, yTop - ph.dh, ph.dw, ph.dh);
+          else { pFill(pp, x, yTop - ph.dh, ph.dw, ph.dh, 0.95); pTextC(pp, cx + CW / 2, yTop - ph.dh / 2 - 3, 'Photo not available', 'I', 8, GREY); }
+          pRect(pp, x, yTop - ph.dh, ph.dw, ph.dh, 0.6, FRAME);
+          pTextC(pp, cx + CW / 2, yTop - ph.dh - 10, fitText(ph.label, 'I', 7.8, CW), 'I', 7.8, GREY);
+        });
+        fl.y -= rh + 4;
       }
       fl.y -= di < u.defs.length - 1 ? 14 : 4;
     });
@@ -633,8 +635,8 @@ async function buildFloorPdf(f, letterheadJpeg, title, loadUnit) {
     pLine(pp, PL, top - h, PR, top - h, 0.5, RULE);
     fl.y -= h;
   };
-  const nOpen = f.defs.filter(d => d.st !== 'closed').length, nOver = f.defs.filter(d => d.st === 'overdue').length;
-  heading(fl, 'PUNCH LIST', plural2(f.defs.length, 'error', 'errors') + '  ·  ' + nOpen + ' open' + (nOver ? '  ·  ' + nOver + ' overdue' : ''));
+  const nOpen = f.defs.filter(d => d.st !== 'closed').length, nOver = f.defs.filter(d => d.late).length, nFix = f.defs.filter(d => d.st === 'fixed').length;
+  heading(fl, 'PUNCH LIST', plural2(f.defs.length, 'error', 'errors') + '  ·  ' + nOpen + ' open' + (nOver ? '  ·  ' + nOver + ' overdue' : '') + (nFix ? '  ·  ' + nFix + ' fixed, not yet verified' : ''));
   if (!f.defs.length) { pText(fl.p, PL, fl.y - 12, 'No errors on Floor ' + f.floor + '.', 'I', 11, GREY); fl.y -= 22; }
   else {
     punchHead();
@@ -655,7 +657,7 @@ async function buildFloorPdf(f, letterheadJpeg, title, loadUnit) {
       item.forEach((l, j) => pText(pp, px[1] + 4, yy - j * LD, fitText(l.t, l.f, j ? FS : 7.4, pc[1][1] - 8), l.f, j ? FS : 7.4, l.c));
       note.forEach((l, j) => pText(pp, px[2] + 4, yy - j * LD, l.t, l.f, FS, l.c));
       resp.forEach((l, j) => pText(pp, px[3] + 4, yy - j * LD, l, 'R', FS, d.responsible ? 0 : LIGHT));
-      pText(pp, px[4] + 4, yy, d.dueShort || '—', d.st === 'overdue' ? 'B' : 'R', FS, d.dueShort ? 0 : LIGHT);
+      pText(pp, px[4] + 4, yy, d.dueShort || '—', d.late ? 'B' : 'R', FS, d.dueShort ? 0 : LIGHT);
       pText(pp, px[5] + 4, yy, STATUS_TEXT[d.st], 'B', 6.9);
       pLine(pp, PL, top - h, PR, top - h, 0.35, HAIR);
       fl.y -= h;
